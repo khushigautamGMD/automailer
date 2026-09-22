@@ -7,11 +7,12 @@ import { GlassCard } from '@/components/ui/GlassCard';
 import { Badge } from '@/components/ui/Badge';
 import { EmailEditor } from '@/components/editor/EmailEditor';
 import { EmailTemplate } from '@/types';
-import { FileCode, Plus, Copy, Trash2, Edit3, Sparkles, Check } from 'lucide-react';
+import { FileCode, Plus, Copy, Trash2, Edit3, Sparkles, Check, Eye } from 'lucide-react';
 
 export default function TemplatesPage() {
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
   const [activeTemplate, setActiveTemplate] = useState<EmailTemplate | null>(null);
+  const [previewingTemplate, setPreviewingTemplate] = useState<EmailTemplate | null>(null);
   const [isEditing, setIsEditing] = useState<boolean>(false);
   const [subject, setSubject] = useState('');
   const [bodyHtml, setBodyHtml] = useState('');
@@ -211,35 +212,94 @@ export default function TemplatesPage() {
                     {tpl.body_html.replace(/<[^>]*>?/gm, '')}
                   </div>
 
-                  <div className="flex items-center justify-between border-t border-zinc-100 pt-3 dark:border-zinc-800">
-                    <button
-                      onClick={() => handleEditTemplate(tpl)}
-                      className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:underline dark:text-blue-400"
-                    >
-                      <Edit3 className="h-3.5 w-3.5" /> Edit Template
-                    </button>
+                    <div className="flex items-center justify-between border-t border-zinc-100 pt-3 dark:border-zinc-800">
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => setPreviewingTemplate(tpl)}
+                          className="inline-flex items-center gap-1 text-xs font-bold text-emerald-600 hover:underline dark:text-emerald-400"
+                        >
+                          <Eye className="h-3.5 w-3.5" /> Preview
+                        </button>
+                        <button
+                          onClick={() => handleEditTemplate(tpl)}
+                          className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:underline dark:text-blue-400"
+                        >
+                          <Edit3 className="h-3.5 w-3.5" /> Edit
+                        </button>
+                      </div>
 
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => handleDuplicate(tpl)}
-                        className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                        title="Duplicate Template"
-                      >
-                        <Copy className="h-4 w-4" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(tpl.id)}
-                        className="rounded-lg p-1.5 text-rose-500 hover:bg-rose-500/10"
-                        title="Delete Template"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleDuplicate(tpl)}
+                          className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                          title="Duplicate Template"
+                        >
+                          <Copy className="h-4 w-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(tpl.id)}
+                          className="rounded-lg p-1.5 text-rose-500 hover:bg-rose-500/10"
+                          title="Delete Template"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </GlassCard>
+                ))}
+              </div>
+            )}
+
+            {/* Template Live Preview Modal */}
+            {previewingTemplate && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+                <div className="w-full max-w-2xl rounded-3xl border border-zinc-800 bg-zinc-900 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+                  {/* Modal Header */}
+                  <div className="p-4 sm:p-5 border-b border-zinc-800 flex items-center justify-between bg-zinc-950/80">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-purple-400">Template Preview</span>
+                      <h3 className="text-base font-bold text-white">{previewingTemplate.name}</h3>
+                      <p className="text-xs text-zinc-400">Subject: {previewingTemplate.subject}</p>
+                    </div>
+                    <button
+                      onClick={() => setPreviewingTemplate(null)}
+                      className="p-1.5 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  {/* Rendered Canvas */}
+                  <div className="p-4 sm:p-6 overflow-y-auto bg-zinc-100 dark:bg-zinc-950 flex justify-center">
+                    <div className="w-full max-w-[600px] rounded-2xl bg-white text-zinc-900 shadow-xl overflow-hidden border border-zinc-200">
+                      <div className="p-4 sm:p-6" dangerouslySetInnerHTML={{
+                        __html: previewingTemplate.body_html
+                          .replace(/\{\{firstname\}\}/gi, 'John')
+                          .replace(/\{\{lastname\}\}/gi, 'Doe')
+                          .replace(/\{\{company\}\}/gi, 'TechCorp Inc')
+                          .replace(/\{\{email\}\}/gi, 'john.doe@techcorp.com')
+                          .replace(/\{\{phone\}\}/gi, '+1-555-0192')
+                      }} />
                     </div>
                   </div>
-                </GlassCard>
-              ))}
-            </div>
-          )}
+
+                  {/* Modal Footer */}
+                  <div className="p-4 border-t border-zinc-800 bg-zinc-950 flex items-center justify-between">
+                    <span className="text-xs text-zinc-400">Personalized sample variables applied (John @ TechCorp)</span>
+                    <button
+                      onClick={() => {
+                        const target = previewingTemplate;
+                        setPreviewingTemplate(null);
+                        handleEditTemplate(target);
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700"
+                    >
+                      <Edit3 className="h-3.5 w-3.5" /> Open in Editor
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
         </main>
       </div>
     </div>

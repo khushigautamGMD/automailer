@@ -99,8 +99,14 @@ export async function sendIndividualEmail(payload: SendEmailPayload): Promise<Se
       return { success: true, messageId: info.messageId, senderUsed: fromAddress, provider: 'smtp' };
     } catch (err: any) {
       let friendlyError = err.message || 'SMTP dispatch failed';
-      if (friendlyError.includes('535') || friendlyError.includes('Username and Password not accepted') || friendlyError.includes('Invalid login')) {
-        friendlyError = `SMTP Credentials Rejected for ${activeUser}! Please check Username & Password.`;
+      if (friendlyError.includes('535') || friendlyError.includes('Username and Password not accepted') || friendlyError.includes('Invalid login') || friendlyError.includes('Authentication credentials invalid')) {
+        friendlyError = `SMTP Credentials Rejected for ${activeUser}! Check that your AWS SES SMTP Username (starts with AKIA...) and SMTP Password are correct.`;
+      } else if (friendlyError.includes('Email address is not verified') || friendlyError.includes('MessageRejected') || friendlyError.includes('not verified')) {
+        friendlyError = `Amazon SES Sandbox Limitation: The recipient "${to}" or sender "${fromAddress}" is not verified in AWS SES. In Sandbox mode, verify both emails in AWS SES Console > Verified Identities (or Request Production Access).`;
+      } else if (friendlyError.includes('ENOTFOUND') || friendlyError.includes('EAI_AGAIN')) {
+        friendlyError = `SMTP Host "${finalHost}" could not be reached. Check your internet connection and SMTP Host address.`;
+      } else if (friendlyError.includes('ETIMEDOUT') || friendlyError.includes('ECONNREFUSED')) {
+        friendlyError = `Connection to ${finalHost}:${activePort} timed out. Make sure port ${activePort} is open (recommended: 587 for TLS).`;
       }
       return { success: false, error: friendlyError, senderUsed: activeUser, provider: 'smtp' };
     }

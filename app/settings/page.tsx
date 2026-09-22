@@ -161,14 +161,30 @@ export default function SettingsPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          to: testEmailInput,
-          subject: '[TEST PREVIEW] Automailer Multi-SMTP Connection Test',
-          bodyHtml: `<div style="font-family: sans-serif; padding: 20px;">
-            <h3 style="color: #2563eb;">Multi-Sender Connection Success!</h3>
-            <p>Your email settings and multi-sender pool are working properly. Sent from <strong>${profile.smtp_user}</strong>.</p>
+          to: testEmailInput.trim(),
+          subject: '[TEST PREVIEW] Automailer Connection Test',
+          bodyHtml: `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 28px; background-color: #ffffff; color: #1e293b; border: 1px solid #e2e8f0; border-radius: 16px;">
+            <div style="text-align: center; margin-bottom: 20px;">
+              <span style="background-color: #dcfce7; color: #15803d; font-size: 11px; font-weight: 700; padding: 5px 12px; border-radius: 9999px; text-transform: uppercase;">Verified Connection</span>
+              <h2 style="color: #0f172a; margin-top: 12px; margin-bottom: 4px;">🎉 SMTP Test Successful!</h2>
+              <p style="color: #64748b; font-size: 14px; margin-top: 0;">Your outbound email engine is connected and ready to send campaigns.</p>
+            </div>
+            <div style="background-color: #f8fafc; border-radius: 10px; padding: 16px; font-size: 13px; line-height: 1.6; border: 1px solid #e2e8f0;">
+              <div><strong>SMTP Host:</strong> ${profile.smtp_host || 'Default'}</div>
+              <div><strong>Port:</strong> ${profile.smtp_port || 587}</div>
+              <div><strong>Sender Identity:</strong> ${profile.reply_to_email || profile.smtp_user}</div>
+              <div><strong>Delivered To:</strong> ${testEmailInput.trim()}</div>
+            </div>
+            <p style="font-size: 11px; color: #94a3b8; text-align: center; margin-top: 24px;">Automailer Outreach Engine • Test Delivery</p>
           </div>`,
           senderName: profile.sender_name || 'Automailer',
+          senderEmail: profile.reply_to_email || (profile.smtp_user?.includes('@') ? profile.smtp_user : undefined),
           replyTo: profile.reply_to_email || profile.smtp_user,
+          smtpHost: profile.smtp_host,
+          smtpPort: profile.smtp_port,
+          smtpUser: profile.smtp_user,
+          smtpPass: profile.smtp_pass,
+          smtpAccounts: smtpAccounts,
         }),
       });
       const data = await res.json();

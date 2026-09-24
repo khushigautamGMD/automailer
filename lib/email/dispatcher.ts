@@ -83,15 +83,18 @@ export async function sendIndividualEmail(payload: SendEmailPayload): Promise<Se
       });
 
       const fromAddress = (
-        payload.senderEmail ||
-        (activeUser.includes('@') ? activeUser : replyTo) ||
+        (payload.senderEmail && payload.senderEmail.includes('@') ? payload.senderEmail : undefined) ||
+        (activeUser.includes('@') ? activeUser : undefined) ||
+        (replyTo && replyTo.includes('@') ? replyTo : undefined) ||
         'newsletter@yourdomain.com'
       ).trim();
+
+      const validReplyTo = (replyTo && replyTo.includes('@')) ? replyTo : fromAddress;
 
       const info = await transporter.sendMail({
         from: `"${senderName}" <${fromAddress}>`,
         to: to,
-        replyTo: replyTo || fromAddress,
+        replyTo: validReplyTo,
         subject: personalizedSubject,
         html: personalizedHtml,
       });

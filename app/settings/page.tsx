@@ -476,6 +476,32 @@ export default function SettingsPage() {
                   className="mt-1.5 w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2 text-xs font-mono text-zinc-900 shadow-sm focus:border-blue-500 focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
                 />
               </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                  Sender / From Email (Verified in AWS SES)
+                </label>
+                <input
+                  type="email"
+                  placeholder="e.g. rahul@growmoredigitally.in"
+                  value={profile.reply_to_email || ''}
+                  onChange={(e) => setProfile({ ...profile, reply_to_email: e.target.value })}
+                  className="mt-1.5 w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2 text-xs font-semibold text-zinc-900 shadow-sm focus:border-blue-500 focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                  Sender Display Name
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Rahul Goswami"
+                  value={profile.sender_name || ''}
+                  onChange={(e) => setProfile({ ...profile, sender_name: e.target.value })}
+                  className="mt-1.5 w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2 text-xs font-semibold text-zinc-900 shadow-sm focus:border-blue-500 focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
+                />
+              </div>
             </div>
 
             {/* Test Connection Button */}

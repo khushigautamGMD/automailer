@@ -147,6 +147,7 @@ function getDataFilePath(): string {
 
 interface GlobalStoreState {
   profile: UserProfile;
+  profiles: Record<string, UserProfile>;
   templates: EmailTemplate[];
   lists: ContactList[];
   contacts: Contact[];
@@ -163,6 +164,7 @@ function loadFromDisk(): GlobalStoreState {
         const parsed = JSON.parse(raw);
         return {
           profile: { ...DEFAULT_PROFILE, ...(parsed.profile || {}) },
+          profiles: parsed.profiles || {},
           templates: parsed.templates || DEFAULT_TEMPLATES,
           lists: parsed.lists || DEFAULT_LISTS,
           contacts: parsed.contacts || DEFAULT_CONTACTS,
@@ -176,6 +178,7 @@ function loadFromDisk(): GlobalStoreState {
   }
   return {
     profile: { ...DEFAULT_PROFILE },
+    profiles: {},
     templates: [...DEFAULT_TEMPLATES],
     lists: [...DEFAULT_LISTS],
     contacts: [...DEFAULT_CONTACTS],
@@ -209,6 +212,9 @@ function syncFromDisk() {
         if (parsed.profile) {
           globalStore.profile = { ...DEFAULT_PROFILE, ...parsed.profile };
         }
+        if (parsed.profiles) {
+          globalStore.profiles = parsed.profiles;
+        }
         if (parsed.templates) globalStore.templates = parsed.templates;
         if (parsed.lists) globalStore.lists = parsed.lists;
         if (parsed.contacts) globalStore.contacts = parsed.contacts;
@@ -220,15 +226,31 @@ function syncFromDisk() {
 }
 
 export const localStore = {
-  getProfile: () => {
+  getProfile: (email?: string) => {
     syncFromDisk();
+    if (email && email.trim()) {
+      const key = email.trim().toLowerCase();
+      if (!globalStore.profiles) globalStore.profiles = {};
+      if (globalStore.profiles[key]) {
+        return { ...DEFAULT_PROFILE, ...globalStore.profiles[key] };
+      }
+    }
     return globalStore.profile;
   },
-  updateProfile: (updated: Partial<UserProfile>) => {
+  updateProfile: (updated: Partial<UserProfile>, email?: string) => {
     syncFromDisk();
+    const userEmail = (email || updated.email || globalStore.profile.email || '').trim().toLowerCase();
+    if (!globalStore.profiles) globalStore.profiles = {};
+    if (userEmail) {
+      globalStore.profiles[userEmail] = {
+        ...(globalStore.profiles[userEmail] || DEFAULT_PROFILE),
+        ...updated,
+        email: userEmail,
+      };
+    }
     globalStore.profile = { ...globalStore.profile, ...updated };
     saveToDisk(globalStore);
-    return globalStore.profile;
+    return userEmail && globalStore.profiles[userEmail] ? globalStore.profiles[userEmail] : globalStore.profile;
   },
   incrementEmailsSent: (count: number = 1) => {
     syncFromDisk();

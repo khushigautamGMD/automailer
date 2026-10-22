@@ -31,9 +31,18 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let userEmail = '';
+    if (typeof window !== 'undefined') {
+      try {
+        const u = localStorage.getItem('automailer_user');
+        if (u) userEmail = JSON.parse(u).email || '';
+      } catch (e) {}
+    }
+    const settingsUrl = '/api/settings' + (userEmail ? `?email=${encodeURIComponent(userEmail)}` : '');
+
     Promise.all([
       fetch('/api/campaigns').then((res) => res.json()),
-      fetch('/api/settings').then((res) => res.json()),
+      fetch(settingsUrl).then((res) => res.json()),
     ]).then(([campData, profData]) => {
       setCampaigns(campData.campaigns || []);
       setProfile(profData.profile);

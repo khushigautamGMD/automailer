@@ -1,10 +1,12 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Navbar } from '@/components/layout/Navbar';
 import { GlassCard } from '@/components/ui/GlassCard';
 import { SmtpAccount } from '@/types';
+import { supabase } from '@/lib/supabase/client';
 import {
   Save,
   CheckCircle,
@@ -58,14 +60,17 @@ export default function SettingsPage() {
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
-  useEffect(() => {
-    // 1. Immediately load cached credentials from browser localStorage for zero-lag display
+  const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
+
+  const loadSettingsForEmail = (email: string | null) => {
     let cachedProfile: any = null;
     let cachedAccounts: SmtpAccount[] = [];
 
     if (typeof window !== 'undefined') {
       try {
-        const raw = localStorage.getItem('automailer_smtp_settings');
+        const specificRaw = email ? localStorage.getItem(`automailer_smtp_settings_${email}`) : null;
+        const globalRaw = localStorage.getItem('automailer_smtp_settings');
+        const raw = specificRaw || globalRaw;
         if (raw) {
           const parsed = JSON.parse(raw);
           if (parsed.profile) {
@@ -82,8 +87,8 @@ export default function SettingsPage() {
       }
     }
 
-    // 2. Fetch from backend API
-    fetch('/api/settings')
+    const settingsUrl = '/api/settings' + (email ? `?email=${encodeURIComponent(email)}` : '');
+    fetch(settingsUrl)
       .then((res) => res.json())
       .then((data) => {
         if (data.profile) {
@@ -101,26 +106,23 @@ export default function SettingsPage() {
             cachedAccounts.length > 0;
 
           if (serverHasCredentials) {
-            // Server has real credentials -> sync to state and cache
             setProfile((prev: any) => ({ ...prev, ...srvProfile }));
             if (srvAccounts.length > 0) {
               setSmtpAccounts(srvAccounts);
             }
             if (typeof window !== 'undefined') {
-              localStorage.setItem(
-                'automailer_smtp_settings',
-                JSON.stringify({
-                  profile: srvProfile,
-                  smtp_accounts: srvAccounts,
-                })
-              );
+              const payloadStr = JSON.stringify({
+                profile: srvProfile,
+                smtp_accounts: srvAccounts,
+              });
+              if (email) localStorage.setItem(`automailer_smtp_settings_${email}`, payloadStr);
+              localStorage.setItem('automailer_smtp_settings', payloadStr);
             }
           } else if (cacheHasCredentials) {
-            // Browser has credentials, but server is fresh/empty (e.g. Vercel cold restart) -> sync back to server!
-            const merged = { ...srvProfile, ...cachedProfile };
+            const merged = { ...srvProfile, ...cachedProfile, ...(email ? { email } : {}) };
             setProfile(merged);
             setSmtpAccounts(cachedAccounts);
-            fetch('/api/settings', {
+            fetch(settingsUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -134,6 +136,34 @@ export default function SettingsPage() {
         }
       })
       .catch((err) => console.error('Failed to fetch settings:', err));
+  };
+
+  useEffect(() => {
+    let resolvedEmail: string | null = null;
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('automailer_user');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed.email) resolvedEmail = parsed.email.trim().toLowerCase();
+        }
+      } catch (e) {}
+    }
+
+    if (resolvedEmail) {
+      setCurrentUserEmail(resolvedEmail);
+    }
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const sessionEmail = session?.user?.email?.trim().toLowerCase();
+      if (sessionEmail && sessionEmail !== resolvedEmail) {
+        resolvedEmail = sessionEmail;
+        setCurrentUserEmail(sessionEmail);
+        loadSettingsForEmail(sessionEmail);
+      }
+    });
+
+    loadSettingsForEmail(resolvedEmail);
   }, []);
 
   const updateProfileField = (field: string, value: any) => {
@@ -141,13 +171,14 @@ export default function SettingsPage() {
       const updated = { ...prev, [field]: value };
       if (typeof window !== 'undefined') {
         try {
-          localStorage.setItem(
-            'automailer_smtp_settings',
-            JSON.stringify({
-              profile: updated,
-              smtp_accounts: smtpAccounts,
-            })
-          );
+          const payloadStr = JSON.stringify({
+            profile: updated,
+            smtp_accounts: smtpAccounts,
+          });
+          if (currentUserEmail) {
+            localStorage.setItem(`automailer_smtp_settings_${currentUserEmail}`, payloadStr);
+          }
+          localStorage.setItem('automailer_smtp_settings', payloadStr);
         } catch (e) {}
       }
       return updated;
@@ -177,36 +208,44 @@ export default function SettingsPage() {
     setSaveStatus(null);
     const targetAccounts = customAccounts ?? smtpAccounts;
     const targetProfile = customProfile ?? profile;
+    const userEmail = (currentUserEmail || targetProfile.email || '').trim().toLowerCase();
 
     // Cache locally immediately in browser
     if (typeof window !== 'undefined') {
       try {
-        localStorage.setItem(
-          'automailer_smtp_settings',
-          JSON.stringify({
-            profile: targetProfile,
-            smtp_accounts: targetAccounts,
-          })
-        );
+        const payloadStr = JSON.stringify({
+          profile: targetProfile,
+          smtp_accounts: targetAccounts,
+        });
+        if (userEmail) {
+          localStorage.setItem(`automailer_smtp_settings_${userEmail}`, payloadStr);
+        }
+        localStorage.setItem('automailer_smtp_settings', payloadStr);
       } catch (e) {
         console.error('Failed to cache settings in localStorage:', e);
       }
     }
 
     try {
-      const res = await fetch('/api/settings', {
+      const url = '/api/settings' + (userEmail ? `?email=${encodeURIComponent(userEmail)}` : '');
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           profile: {
             ...targetProfile,
+            ...(userEmail ? { email: userEmail } : {}),
             smtp_accounts: targetAccounts,
           },
         }),
       });
       const data = await res.json();
       if (res.ok) {
-        setSaveStatus('SMTP Credentials & Settings permanently saved!');
+        setSaveStatus(
+          userEmail
+            ? `SMTP Credentials permanently saved for ${userEmail}!`
+            : 'SMTP Credentials & Settings permanently saved!'
+        );
       } else {
         throw new Error(data.error || 'Save failed');
       }
@@ -277,6 +316,7 @@ export default function SettingsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to: testEmailInput.trim(),
+          userEmail: currentUserEmail || profile.smtp_user,
           subject: '[TEST PREVIEW] Automailer Connection Test',
           bodyHtml: `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 28px; background-color: #ffffff; color: #1e293b; border: 1px solid #e2e8f0; border-radius: 16px;">
             <div style="text-align: center; margin-bottom: 20px;">
@@ -354,6 +394,45 @@ export default function SettingsPage() {
               <span>{isSaving ? 'Saving...' : 'Save Settings'}</span>
             </button>
           </div>
+
+          {/* Cloud Account Sync Indicator */}
+          {currentUserEmail ? (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-blue-500/30 bg-blue-500/10 p-4 text-xs">
+              <div className="flex items-center gap-2.5">
+                <span className="flex h-3 w-3 shrink-0 rounded-full bg-emerald-500 ring-4 ring-emerald-500/20 animate-pulse" />
+                <div>
+                  <div className="font-bold text-zinc-900 dark:text-white flex items-center gap-2">
+                    <span>Cloud Sync Active:</span>
+                    <span className="font-mono text-blue-600 dark:text-blue-400 font-bold">{currentUserEmail}</span>
+                  </div>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                    Your SMTP credentials and sender pool are permanently linked to this email. Anyone logging in with this email on any computer will automatically load these credentials.
+                  </p>
+                </div>
+              </div>
+              <span className="shrink-0 rounded-xl bg-blue-600/20 px-3 py-1 text-[11px] font-extrabold text-blue-600 dark:text-blue-300">
+                ☁️ Cross-Device Ready
+              </span>
+            </div>
+          ) : (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs">
+              <div className="flex items-center gap-2.5">
+                <AlertCircle className="h-5 w-5 shrink-0 text-amber-500" />
+                <div>
+                  <strong className="text-zinc-900 dark:text-white">Local Device Mode (Guest)</strong>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                    Credentials are saved on this computer only. To sync across multiple PCs and team members, sign in with your email account.
+                  </p>
+                </div>
+              </div>
+              <Link
+                href="/login?redirect=/settings"
+                className="inline-flex items-center gap-1.5 shrink-0 rounded-xl bg-amber-600 px-3.5 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-amber-700 transition-colors"
+              >
+                Sign In to Sync Across PCs →
+              </Link>
+            </div>
+          )}
 
           {/* Plan Limits Banner */}
           <PlanLimitBanner profile={profile} />
@@ -634,7 +713,9 @@ export default function SettingsPage() {
             {/* Primary SMTP Dedicated Save Action */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-zinc-200/80 dark:border-zinc-800">
               <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                💾 Credentials are saved instantly to your browser and persistent storage.
+                {currentUserEmail
+                  ? `💾 Saved to cloud account (${currentUserEmail}) and local cache.`
+                  : '💾 Credentials are saved instantly to your browser and persistent storage.'}
               </span>
               <button
                 type="button"

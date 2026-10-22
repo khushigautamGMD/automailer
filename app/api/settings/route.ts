@@ -5,17 +5,17 @@ import { isSupabaseConfigured } from '@/lib/supabase/client';
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const email = searchParams.get('email') || localStore.getProfile().email;
-  let profile = localStore.getProfile();
+  const email = (searchParams.get('email') || localStore.getProfile().email || '').trim().toLowerCase();
+  let profile = localStore.getProfile(email);
 
-  // Only attempt Supabase sync if Supabase is properly configured
+  // Sync from Supabase cloud database if configured
   if (email && isSupabaseConfigured()) {
     try {
       const { getProfileByEmail } = await import('@/lib/supabase/db');
       const dbProfile = await getProfileByEmail(email);
-      // Only merge if DB profile exists and has non-empty credentials so local credentials are never wiped
-      if (dbProfile && (dbProfile.smtp_user || dbProfile.smtp_pass || (dbProfile.smtp_accounts && dbProfile.smtp_accounts.length > 0))) {
-        profile = localStore.updateProfile(dbProfile);
+      // If DB has profile for this email, sync to store and return
+      if (dbProfile) {
+        profile = localStore.updateProfile(dbProfile, email);
       }
     } catch (e) {
       console.error('Failed to sync profile from DB:', e);
@@ -29,8 +29,9 @@ export async function POST(req: Request) {
   try {
     const raw = await req.json();
     const body = raw.profile || raw;
-    const email = body.email || localStore.getProfile().email;
-    let profile = localStore.getProfile();
+    const { searchParams } = new URL(req.url);
+    const email = (body.email || searchParams.get('email') || localStore.getProfile().email || '').trim().toLowerCase();
+    let profile = localStore.getProfile(email);
 
     if (email && isSupabaseConfigured()) {
       try {
@@ -53,14 +54,16 @@ export async function POST(req: Request) {
       }
     }
 
-    // Persist to localStore (which immediately writes to disk store.json)
-    const updatedProfile = localStore.updateProfile(body);
+    const payload = { ...body, ...(email ? { email } : {}) };
 
-    // Also persist to Supabase if configured
+    // Persist to localStore under user email (writes to store.json)
+    const updatedProfile = localStore.updateProfile(payload, email);
+
+    // Also persist to Supabase cloud database if configured
     if (email && isSupabaseConfigured()) {
       try {
         const { updateProfileByEmail } = await import('@/lib/supabase/db');
-        await updateProfileByEmail(email, body);
+        await updateProfileByEmail(email, payload);
       } catch (e) {
         console.error('Failed to persist profile to DB:', e);
       }

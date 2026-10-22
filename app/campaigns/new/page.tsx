@@ -68,8 +68,16 @@ export default function NewCampaignWizard() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    // Load initial user settings and saved contact lists
-    fetch('/api/settings')
+    // Load initial user settings for logged-in account
+    let userEmail = '';
+    if (typeof window !== 'undefined') {
+      try {
+        const u = localStorage.getItem('automailer_user');
+        if (u) userEmail = JSON.parse(u).email || '';
+      } catch (e) {}
+    }
+    const settingsUrl = '/api/settings' + (userEmail ? `?email=${encodeURIComponent(userEmail)}` : '');
+    fetch(settingsUrl)
       .then((res) => res.json())
       .then((data) => {
         if (data.profile) {

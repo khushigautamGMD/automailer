@@ -18,13 +18,15 @@ export async function POST(req: Request) {
       smtpPass,
       smtpAccounts,
       resendApiKey,
+      userEmail,
     } = body;
 
     if (!to || !subject || !bodyHtml) {
       return NextResponse.json({ error: 'Missing recipient, subject, or HTML body' }, { status: 400 });
     }
 
-    const profile = localStore.getProfile();
+    const emailKey = (userEmail || senderEmail || smtpUser || '').trim().toLowerCase();
+    const profile = localStore.getProfile(emailKey);
 
     const activeUser = smtpUser || profile.smtp_user;
     const activePass = smtpPass || profile.smtp_pass;
@@ -72,7 +74,7 @@ export async function POST(req: Request) {
           smtp_port: activePort,
           smtp_user: activeUser,
           smtp_pass: activePass,
-        });
+        }, emailKey);
       }
 
       return NextResponse.json({

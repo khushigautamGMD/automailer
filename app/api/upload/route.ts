@@ -51,7 +51,11 @@ export async function POST(req: Request) {
           last_name: item.lastname,
           company: item.company,
           phone: item.phone,
-          custom_fields: item,
+          custom_fields: Object.fromEntries(
+            Object.entries(item)
+              .filter(([_, v]) => v !== undefined)
+              .map(([k, v]) => [k, String(v)])
+          ),
           status: 'active',
         }))
       );

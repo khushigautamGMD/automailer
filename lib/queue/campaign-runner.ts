@@ -109,13 +109,13 @@ async function executeQueueLoop(campaignId: string) {
       const contact = pendingContacts[i];
 
       // Prepare Personalization Variables
-      const variables: Record<string, string | undefined> = {
+      const variables: Record<string, string> = {
         firstname: contact.first_name || 'Valued',
         lastname: contact.last_name || 'Client',
         email: contact.email,
         company: contact.company || 'Partner',
         phone: contact.phone || '',
-        ...contact.custom_fields,
+        ...(contact.custom_fields || {}),
       };
 
       // Round-Robin Sender Rotation
@@ -125,7 +125,7 @@ async function executeQueueLoop(campaignId: string) {
       const result = await sendIndividualEmail({
         to: contact.email,
         senderName: campaign.sender_name || profile.sender_name || 'GrowMore Digitally',
-        senderEmail: profile.email,
+        senderEmail: campaign.reply_to || profile.reply_to_email || profile.email,
         replyTo: campaign.reply_to || profile.reply_to_email,
         subject: campaign.subject,
         bodyHtml: campaign.body_html,

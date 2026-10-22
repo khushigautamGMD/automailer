@@ -68,6 +68,13 @@ export async function sendIndividualEmail(payload: SendEmailPayload): Promise<Se
   if (activeUser && activePass) {
     const finalHost = activeHost || (activeUser.toLowerCase().endsWith('@gmail.com') ? 'smtp.gmail.com' : 'smtp.office365.com');
 
+    const fromAddress = (
+      (payload.senderEmail && payload.senderEmail.includes('@') ? payload.senderEmail : undefined) ||
+      (activeUser.includes('@') ? activeUser : undefined) ||
+      (replyTo && replyTo.includes('@') ? replyTo : undefined) ||
+      'newsletter@yourdomain.com'
+    ).trim();
+
     try {
       const transporter = nodemailer.createTransport({
         host: finalHost,
@@ -81,13 +88,6 @@ export async function sendIndividualEmail(payload: SendEmailPayload): Promise<Se
           rejectUnauthorized: false,
         },
       });
-
-      const fromAddress = (
-        (payload.senderEmail && payload.senderEmail.includes('@') ? payload.senderEmail : undefined) ||
-        (activeUser.includes('@') ? activeUser : undefined) ||
-        (replyTo && replyTo.includes('@') ? replyTo : undefined) ||
-        'newsletter@yourdomain.com'
-      ).trim();
 
       const validReplyTo = (replyTo && replyTo.includes('@')) ? replyTo : fromAddress;
 

@@ -40,3 +40,6 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
+
+# local persistent storage - DO NOT commit secrets
+/data/

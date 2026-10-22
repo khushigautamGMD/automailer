@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { Campaign, ContactList, Contact, EmailTemplate, EmailLog, UserProfile, SmtpAccount } from '@/types';
 
 const DEFAULT_SMTP_ACCOUNTS: SmtpAccount[] = [];
@@ -122,44 +124,143 @@ const DEFAULT_LISTS: ContactList[] = [];
 const DEFAULT_CONTACTS: Contact[] = [];
 const DEFAULT_CAMPAIGNS: Campaign[] = [];
 
-// In-Memory Global Store for local development runtime
-let globalStore = {
-  profile: DEFAULT_PROFILE,
-  templates: DEFAULT_TEMPLATES,
-  lists: DEFAULT_LISTS,
-  contacts: DEFAULT_CONTACTS,
-  campaigns: DEFAULT_CAMPAIGNS,
-  logs: [] as EmailLog[],
-};
+function getDataFilePath(): string {
+  try {
+    const cwd = process.cwd();
+    // 1. If running inside automailer-main folder
+    if (fs.existsSync(path.join(cwd, 'package.json'))) {
+      return path.join(cwd, 'data', 'store.json');
+    }
+    // 2. If running from parent directory
+    if (fs.existsSync(path.join(cwd, 'automailer-main', 'package.json'))) {
+      return path.join(cwd, 'automailer-main', 'data', 'store.json');
+    }
+    return path.join(cwd, 'data', 'store.json');
+  } catch {
+    return path.join(process.cwd(), 'data', 'store.json');
+  }
+}
+
+interface GlobalStoreState {
+  profile: UserProfile;
+  templates: EmailTemplate[];
+  lists: ContactList[];
+  contacts: Contact[];
+  campaigns: Campaign[];
+  logs: EmailLog[];
+}
+
+function loadFromDisk(): GlobalStoreState {
+  try {
+    const filePath = getDataFilePath();
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      if (raw && raw.trim().length > 0) {
+        const parsed = JSON.parse(raw);
+        return {
+          profile: { ...DEFAULT_PROFILE, ...(parsed.profile || {}) },
+          templates: parsed.templates || DEFAULT_TEMPLATES,
+          lists: parsed.lists || DEFAULT_LISTS,
+          contacts: parsed.contacts || DEFAULT_CONTACTS,
+          campaigns: parsed.campaigns || DEFAULT_CAMPAIGNS,
+          logs: parsed.logs || [],
+        };
+      }
+    }
+  } catch (err) {
+    console.error('[storage] Failed to load data from disk:', err);
+  }
+  return {
+    profile: { ...DEFAULT_PROFILE },
+    templates: [...DEFAULT_TEMPLATES],
+    lists: [...DEFAULT_LISTS],
+    contacts: [...DEFAULT_CONTACTS],
+    campaigns: [...DEFAULT_CAMPAIGNS],
+    logs: [],
+  };
+}
+
+let globalStore: GlobalStoreState = loadFromDisk();
+
+function saveToDisk(store: GlobalStoreState) {
+  try {
+    const filePath = getDataFilePath();
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(filePath, JSON.stringify(store, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('[storage] Failed to save data to disk:', err);
+  }
+}
+
+function syncFromDisk() {
+  try {
+    const filePath = getDataFilePath();
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      if (raw && raw.trim().length > 0) {
+        const parsed = JSON.parse(raw);
+        if (parsed.profile) {
+          globalStore.profile = { ...DEFAULT_PROFILE, ...parsed.profile };
+        }
+        if (parsed.templates) globalStore.templates = parsed.templates;
+        if (parsed.lists) globalStore.lists = parsed.lists;
+        if (parsed.contacts) globalStore.contacts = parsed.contacts;
+        if (parsed.campaigns) globalStore.campaigns = parsed.campaigns;
+        if (parsed.logs) globalStore.logs = parsed.logs;
+      }
+    }
+  } catch {}
+}
 
 export const localStore = {
-  getProfile: () => globalStore.profile,
+  getProfile: () => {
+    syncFromDisk();
+    return globalStore.profile;
+  },
   updateProfile: (updated: Partial<UserProfile>) => {
+    syncFromDisk();
     globalStore.profile = { ...globalStore.profile, ...updated };
+    saveToDisk(globalStore);
     return globalStore.profile;
   },
   incrementEmailsSent: (count: number = 1) => {
+    syncFromDisk();
     const current = globalStore.profile.emails_sent_this_month || 0;
     globalStore.profile.emails_sent_this_month = current + count;
+    saveToDisk(globalStore);
     return globalStore.profile.emails_sent_this_month;
   },
 
-  getTemplates: () => globalStore.templates,
+  getTemplates: () => {
+    syncFromDisk();
+    return globalStore.templates;
+  },
   addTemplate: (tpl: Omit<EmailTemplate, 'id' | 'created_at'>) => {
+    syncFromDisk();
     const newTpl: EmailTemplate = {
       ...tpl,
       id: `tpl-${Date.now()}`,
       created_at: new Date().toISOString(),
     };
     globalStore.templates.unshift(newTpl);
+    saveToDisk(globalStore);
     return newTpl;
   },
   deleteTemplate: (id: string) => {
+    syncFromDisk();
     globalStore.templates = globalStore.templates.filter((t) => t.id !== id);
+    saveToDisk(globalStore);
   },
 
-  getLists: () => globalStore.lists,
+  getLists: () => {
+    syncFromDisk();
+    return globalStore.lists;
+  },
   addList: (list: { name: string; description?: string; tags?: string[] }) => {
+    syncFromDisk();
     const newList: ContactList = {
       id: `lst-${Date.now()}`,
       name: list.name,
@@ -169,18 +270,23 @@ export const localStore = {
       created_at: new Date().toISOString(),
     };
     globalStore.lists.unshift(newList);
+    saveToDisk(globalStore);
     return newList;
   },
   deleteList: (id: string) => {
+    syncFromDisk();
     globalStore.lists = globalStore.lists.filter((l) => l.id !== id);
     globalStore.contacts = globalStore.contacts.filter((c) => c.list_id !== id);
+    saveToDisk(globalStore);
   },
 
   getContacts: (listId?: string) => {
+    syncFromDisk();
     if (!listId || listId === 'all') return globalStore.contacts;
     return globalStore.contacts.filter((c) => c.list_id === listId);
   },
   addContacts: (listId: string, newContacts: Omit<Contact, 'id' | 'list_id' | 'created_at'>[]) => {
+    syncFromDisk();
     const created = newContacts.map((c, idx) => ({
       ...c,
       id: `cnt-${Date.now()}-${idx}`,
@@ -193,9 +299,11 @@ export const localStore = {
     if (list) {
       list.total_contacts = (list.total_contacts || 0) + created.length;
     }
+    saveToDisk(globalStore);
     return created;
   },
   deleteContact: (id: string) => {
+    syncFromDisk();
     const contact = globalStore.contacts.find((c) => c.id === id);
     if (contact) {
       globalStore.contacts = globalStore.contacts.filter((c) => c.id !== id);
@@ -203,12 +311,20 @@ export const localStore = {
       if (list && list.total_contacts > 0) {
         list.total_contacts -= 1;
       }
+      saveToDisk(globalStore);
     }
   },
 
-  getCampaigns: () => globalStore.campaigns,
-  getCampaign: (id: string) => globalStore.campaigns.find((c) => c.id === id),
+  getCampaigns: () => {
+    syncFromDisk();
+    return globalStore.campaigns;
+  },
+  getCampaign: (id: string) => {
+    syncFromDisk();
+    return globalStore.campaigns.find((c) => c.id === id);
+  },
   addCampaign: (campaign: Omit<Campaign, 'id' | 'created_at' | 'sent_count' | 'failed_count' | 'open_count' | 'click_count' | 'bounced_count' | 'unsubscribed_count'>) => {
+    syncFromDisk();
     const newCmp: Campaign = {
       ...campaign,
       id: `cmp-${Date.now()}`,
@@ -221,30 +337,39 @@ export const localStore = {
       unsubscribed_count: 0,
     };
     globalStore.campaigns.unshift(newCmp);
+    saveToDisk(globalStore);
     return newCmp;
   },
   updateCampaign: (id: string, updates: Partial<Campaign>) => {
+    syncFromDisk();
     const idx = globalStore.campaigns.findIndex((c) => c.id === id);
     if (idx !== -1) {
       globalStore.campaigns[idx] = { ...globalStore.campaigns[idx], ...updates };
+      saveToDisk(globalStore);
       return globalStore.campaigns[idx];
     }
     return null;
   },
   deleteCampaign: (id: string) => {
+    syncFromDisk();
     globalStore.campaigns = globalStore.campaigns.filter((c) => c.id !== id);
     globalStore.logs = globalStore.logs.filter((l) => l.campaign_id !== id);
+    saveToDisk(globalStore);
   },
 
-  getLogs: (campaignId: string) => globalStore.logs.filter((l) => l.campaign_id === campaignId),
+  getLogs: (campaignId: string) => {
+    syncFromDisk();
+    return globalStore.logs.filter((l) => l.campaign_id === campaignId);
+  },
   addLog: (log: Omit<EmailLog, 'id' | 'created_at'>) => {
+    syncFromDisk();
     const newLog: EmailLog = {
       ...log,
       id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       created_at: new Date().toISOString(),
     };
     globalStore.logs.unshift(newLog);
+    saveToDisk(globalStore);
     return newLog;
   },
 };
-

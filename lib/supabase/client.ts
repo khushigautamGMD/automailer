@@ -4,3 +4,17 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-anon-key';
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+export function isSupabaseConfigured(): boolean {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  return Boolean(
+    url &&
+    url.startsWith('https://') &&
+    !url.includes('your-supabase-project') &&
+    !url.includes('placeholder') &&
+    key &&
+    !key.includes('your-supabase-anon-key') &&
+    !key.includes('placeholder')
+  );
+}

@@ -19,6 +19,8 @@ import {
   HelpCircle,
   ChevronDown,
   ChevronUp,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { PlanLimitBanner } from '@/components/ui/PlanLimitBanner';
 
@@ -42,6 +44,8 @@ export default function SettingsPage() {
   const [accName, setAccName] = useState('');
   const [accUser, setAccUser] = useState('');
   const [accPass, setAccPass] = useState('');
+  const [showSmtpPass, setShowSmtpPass] = useState(false);
+  const [showModalPass, setShowModalPass] = useState(false);
 
   // Guide Toggle State
   const [showGuide, setShowGuide] = useState(true);
@@ -55,16 +59,72 @@ export default function SettingsPage() {
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   useEffect(() => {
+    // 1. Immediately load cached credentials from browser localStorage for zero-lag display
+    let cachedSettings: any = null;
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('automailer_smtp_settings');
+        if (raw) {
+          cachedSettings = JSON.parse(raw);
+          if (cachedSettings.profile) {
+            setProfile((prev: any) => ({ ...prev, ...cachedSettings.profile }));
+          }
+          if (cachedSettings.smtp_accounts && Array.isArray(cachedSettings.smtp_accounts)) {
+            setSmtpAccounts(cachedSettings.smtp_accounts);
+          }
+        }
+      } catch (e) {
+        console.error('Failed to load cached SMTP settings:', e);
+      }
+    }
+
+    // 2. Fetch from backend API
     fetch('/api/settings')
       .then((res) => res.json())
       .then((data) => {
         if (data.profile) {
-          setProfile(data.profile);
-          if (data.profile.smtp_accounts) {
-            setSmtpAccounts(data.profile.smtp_accounts);
+          const srvProfile = data.profile;
+          const srvAccounts = srvProfile.smtp_accounts || [];
+
+          const hasServerCredentials =
+            Boolean(srvProfile.smtp_user) ||
+            Boolean(srvProfile.smtp_pass) ||
+            srvAccounts.length > 0;
+
+          if (hasServerCredentials || !cachedSettings) {
+            setProfile((prev: any) => ({ ...prev, ...srvProfile }));
+            if (srvAccounts.length > 0) {
+              setSmtpAccounts(srvAccounts);
+            }
+            if (typeof window !== 'undefined') {
+              localStorage.setItem(
+                'automailer_smtp_settings',
+                JSON.stringify({
+                  profile: srvProfile,
+                  smtp_accounts: srvAccounts,
+                })
+              );
+            }
+          } else if (cachedSettings) {
+            // Restore cached credentials to server if server was fresh/empty
+            const mergedProfile = { ...srvProfile, ...(cachedSettings.profile || {}) };
+            const mergedAccounts = cachedSettings.smtp_accounts || [];
+            setProfile(mergedProfile);
+            setSmtpAccounts(mergedAccounts);
+            fetch('/api/settings', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                profile: {
+                  ...mergedProfile,
+                  smtp_accounts: mergedAccounts,
+                },
+              }),
+            });
           }
         }
-      });
+      })
+      .catch((err) => console.error('Failed to fetch settings:', err));
   }, []);
 
   const handleOpenAddModal = () => {
@@ -72,6 +132,7 @@ export default function SettingsPage() {
     setAccName('');
     setAccUser('');
     setAccPass('');
+    setShowModalPass(false);
     setShowAccountModal(true);
   };
 
@@ -80,7 +141,53 @@ export default function SettingsPage() {
     setAccName(acc.name);
     setAccUser(acc.user);
     setAccPass(acc.pass);
+    setShowModalPass(false);
     setShowAccountModal(true);
+  };
+
+  const handleSaveSettings = async (customAccounts?: SmtpAccount[], customProfile?: any) => {
+    setIsSaving(true);
+    setSaveStatus(null);
+    const targetAccounts = customAccounts ?? smtpAccounts;
+    const targetProfile = customProfile ?? profile;
+
+    // Cache locally immediately in browser
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(
+          'automailer_smtp_settings',
+          JSON.stringify({
+            profile: targetProfile,
+            smtp_accounts: targetAccounts,
+          })
+        );
+      } catch (e) {
+        console.error('Failed to cache settings in localStorage:', e);
+      }
+    }
+
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          profile: {
+            ...targetProfile,
+            smtp_accounts: targetAccounts,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSaveStatus('SMTP Credentials & Settings permanently saved!');
+      } else {
+        throw new Error(data.error || 'Save failed');
+      }
+    } catch (err: any) {
+      setSaveStatus(err.message || 'Failed to save settings');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleSaveAccountModal = () => {
@@ -89,66 +196,47 @@ export default function SettingsPage() {
       return;
     }
 
+    const cleanUser = accUser.trim();
+    const cleanPass = accPass.trim().replace(/\s+/g, '');
+
+    let updatedAccounts: SmtpAccount[];
     if (editingAccountId) {
       // Edit existing
-      setSmtpAccounts(
-        smtpAccounts.map((a) =>
-          a.id === editingAccountId
-            ? { ...a, name: accName || a.name, user: accUser, pass: accPass }
-            : a
-        )
+      updatedAccounts = smtpAccounts.map((a) =>
+        a.id === editingAccountId
+          ? { ...a, name: accName.trim() || a.name, user: cleanUser, pass: cleanPass }
+          : a
       );
     } else {
       // Add new
       const newAcc: SmtpAccount = {
         id: `smtp-${Date.now()}`,
-        name: accName || `Sender (${accUser.split('@')[0]})`,
+        name: accName.trim() || `Sender (${cleanUser.split('@')[0]})`,
         host: 'smtp.gmail.com',
         port: 587,
-        user: accUser,
-        pass: accPass,
+        user: cleanUser,
+        pass: cleanPass,
         active: true,
       };
-      setSmtpAccounts([...smtpAccounts, newAcc]);
+      updatedAccounts = [...smtpAccounts, newAcc];
     }
 
+    setSmtpAccounts(updatedAccounts);
     setShowAccountModal(false);
+    // Auto-save permanently on add/edit
+    handleSaveSettings(updatedAccounts);
   };
 
   const handleDeleteSmtpAccount = (id: string) => {
-    setSmtpAccounts(smtpAccounts.filter((a) => a.id !== id));
+    const updated = smtpAccounts.filter((a) => a.id !== id);
+    setSmtpAccounts(updated);
+    handleSaveSettings(updated);
   };
 
   const handleToggleSmtpAccount = (id: string) => {
-    setSmtpAccounts(
-      smtpAccounts.map((a) => (a.id === id ? { ...a, active: !a.active } : a))
-    );
-  };
-
-  const handleSaveSettings = async () => {
-    setIsSaving(true);
-    setSaveStatus(null);
-    try {
-      const res = await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          profile: {
-            ...profile,
-            smtp_accounts: smtpAccounts,
-          },
-        }),
-      });
-      if (res.ok) {
-        setSaveStatus('Settings successfully saved!');
-      } else {
-        throw new Error('Save failed');
-      }
-    } catch (err: any) {
-      setSaveStatus('Failed to save settings');
-    } finally {
-      setIsSaving(false);
-    }
+    const updated = smtpAccounts.map((a) => (a.id === id ? { ...a, active: !a.active } : a));
+    setSmtpAccounts(updated);
+    handleSaveSettings(updated);
   };
 
   const handleTestConnection = async () => {
@@ -194,6 +282,8 @@ export default function SettingsPage() {
           success: true,
           message: `Connection Verified! Test email delivered to ${testEmailInput}.`,
         });
+        // Auto-save verified settings permanently
+        handleSaveSettings();
       } else {
         setTestResult({
           success: false,
@@ -229,7 +319,7 @@ export default function SettingsPage() {
             </div>
 
             <button
-              onClick={handleSaveSettings}
+              onClick={() => handleSaveSettings()}
               disabled={isSaving}
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white shadow-md hover:bg-blue-700 disabled:opacity-50"
             >
@@ -467,14 +557,24 @@ export default function SettingsPage() {
                 <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
                   SMTP Password (or SES Secret Key)
                 </label>
-                <input
-                  type="password"
-                  autoComplete="new-password"
-                  placeholder="SES SMTP Password or Gmail App Password"
-                  value={profile.smtp_pass || ''}
-                  onChange={(e) => setProfile({ ...profile, smtp_pass: e.target.value })}
-                  className="mt-1.5 w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2 text-xs font-mono text-zinc-900 shadow-sm focus:border-blue-500 focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
-                />
+                <div className="relative mt-1.5">
+                  <input
+                    type={showSmtpPass ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    placeholder="SES SMTP Password or Gmail App Password"
+                    value={profile.smtp_pass || ''}
+                    onChange={(e) => setProfile({ ...profile, smtp_pass: e.target.value })}
+                    className="w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2 pr-10 text-xs font-mono text-zinc-900 shadow-sm focus:border-blue-500 focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSmtpPass(!showSmtpPass)}
+                    className="absolute right-3 top-2.5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+                    title={showSmtpPass ? 'Hide password' : 'Show password'}
+                  >
+                    {showSmtpPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
 
               <div>
@@ -575,13 +675,23 @@ export default function SettingsPage() {
 
               <div>
                 <label className="block text-xs font-bold text-zinc-700 dark:text-zinc-300">Gmail App Password (16 Letters)</label>
-                <input
-                  type="password"
-                  placeholder="16-letter App Password"
-                  value={accPass}
-                  onChange={(e) => setAccPass(e.target.value)}
-                  className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-xs font-mono text-zinc-900 dark:border-zinc-800 dark:bg-zinc-950 dark:text-white"
-                />
+                <div className="relative mt-1">
+                  <input
+                    type={showModalPass ? 'text' : 'password'}
+                    placeholder="16-letter App Password"
+                    value={accPass}
+                    onChange={(e) => setAccPass(e.target.value)}
+                    className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 pr-10 text-xs font-mono text-zinc-900 dark:border-zinc-800 dark:bg-zinc-950 dark:text-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowModalPass(!showModalPass)}
+                    className="absolute right-3 top-2.5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+                    title={showModalPass ? 'Hide password' : 'Show password'}
+                  >
+                    {showModalPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
 
               <div className="flex justify-end gap-2 pt-2">

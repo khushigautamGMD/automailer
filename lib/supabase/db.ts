@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabase/client';
+import { supabase, isSupabaseConfigured } from '@/lib/supabase/client';
 import { UserProfile, PlanTier, SmtpAccount } from '@/types';
 
 /**
@@ -55,9 +55,9 @@ function dbToProfile(row: DbProfile): UserProfile {
  * Get or create a user profile by email.
  * Auto-resets monthly email counter if a new month has started.
  */
-export async function getProfileByEmail(email: string): Promise<UserProfile> {
-  if (!email) {
-    return getDefaultProfile();
+export async function getProfileByEmail(email: string): Promise<UserProfile | null> {
+  if (!email || !isSupabaseConfigured()) {
+    return null;
   }
 
   try {
@@ -77,7 +77,7 @@ export async function getProfileByEmail(email: string): Promise<UserProfile> {
 
       if (insertError || !newProfile) {
         console.error('Failed to create profile in DB:', insertError);
-        return getDefaultProfile(email);
+        return null;
       }
 
       return dbToProfile(newProfile as DbProfile);
@@ -98,7 +98,7 @@ export async function getProfileByEmail(email: string): Promise<UserProfile> {
     return profile;
   } catch (err) {
     console.error('DB getProfile error:', err);
-    return getDefaultProfile(email);
+    return null;
   }
 }
 
@@ -108,8 +108,8 @@ export async function getProfileByEmail(email: string): Promise<UserProfile> {
 export async function updateProfileByEmail(
   email: string,
   updates: Partial<UserProfile>
-): Promise<UserProfile> {
-  if (!email) return getDefaultProfile();
+): Promise<UserProfile | null> {
+  if (!email || !isSupabaseConfigured()) return null;
 
   try {
     // Map UserProfile fields to DB column names
@@ -147,7 +147,7 @@ export async function updateProfileByEmail(
 
       if (upsertError || !upserted) {
         console.error('DB updateProfile error:', upsertError);
-        return getDefaultProfile(email);
+        return null;
       }
       return dbToProfile(upserted as DbProfile);
     }
@@ -155,7 +155,7 @@ export async function updateProfileByEmail(
     return dbToProfile(data as DbProfile);
   } catch (err) {
     console.error('DB updateProfile error:', err);
-    return getDefaultProfile(email);
+    return null;
   }
 }
 
@@ -163,7 +163,7 @@ export async function updateProfileByEmail(
  * Increment the emails_sent_this_month counter atomically.
  */
 export async function incrementEmailsSent(email: string, count: number = 1): Promise<number> {
-  if (!email) return 0;
+  if (!email || !isSupabaseConfigured()) return 0;
 
   try {
     // Use RPC or manual increment
@@ -191,7 +191,7 @@ export async function incrementEmailsSent(email: string, count: number = 1): Pro
 /**
  * Upgrade user plan after successful payment.
  */
-export async function upgradePlan(email: string, plan: PlanTier): Promise<UserProfile> {
+export async function upgradePlan(email: string, plan: PlanTier): Promise<UserProfile | null> {
   return updateProfileByEmail(email, { plan });
 }
 

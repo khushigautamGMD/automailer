@@ -126,6 +126,10 @@ const DEFAULT_CAMPAIGNS: Campaign[] = [];
 
 function getDataFilePath(): string {
   try {
+    // On Vercel / AWS Lambda serverless functions, /tmp is the only writable filesystem directory
+    if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+      return path.join('/tmp', 'automailer-store.json');
+    }
     const cwd = process.cwd();
     // 1. If running inside automailer-main folder
     if (fs.existsSync(path.join(cwd, 'package.json'))) {

@@ -60,17 +60,21 @@ export default function SettingsPage() {
 
   useEffect(() => {
     // 1. Immediately load cached credentials from browser localStorage for zero-lag display
-    let cachedSettings: any = null;
+    let cachedProfile: any = null;
+    let cachedAccounts: SmtpAccount[] = [];
+
     if (typeof window !== 'undefined') {
       try {
         const raw = localStorage.getItem('automailer_smtp_settings');
         if (raw) {
-          cachedSettings = JSON.parse(raw);
-          if (cachedSettings.profile) {
-            setProfile((prev: any) => ({ ...prev, ...cachedSettings.profile }));
+          const parsed = JSON.parse(raw);
+          if (parsed.profile) {
+            cachedProfile = parsed.profile;
+            setProfile((prev: any) => ({ ...prev, ...parsed.profile }));
           }
-          if (cachedSettings.smtp_accounts && Array.isArray(cachedSettings.smtp_accounts)) {
-            setSmtpAccounts(cachedSettings.smtp_accounts);
+          if (parsed.smtp_accounts && Array.isArray(parsed.smtp_accounts)) {
+            cachedAccounts = parsed.smtp_accounts;
+            setSmtpAccounts(parsed.smtp_accounts);
           }
         }
       } catch (e) {
@@ -86,12 +90,18 @@ export default function SettingsPage() {
           const srvProfile = data.profile;
           const srvAccounts = srvProfile.smtp_accounts || [];
 
-          const hasServerCredentials =
+          const serverHasCredentials =
             Boolean(srvProfile.smtp_user) ||
             Boolean(srvProfile.smtp_pass) ||
             srvAccounts.length > 0;
 
-          if (hasServerCredentials || !cachedSettings) {
+          const cacheHasCredentials =
+            Boolean(cachedProfile?.smtp_user) ||
+            Boolean(cachedProfile?.smtp_pass) ||
+            cachedAccounts.length > 0;
+
+          if (serverHasCredentials) {
+            // Server has real credentials -> sync to state and cache
             setProfile((prev: any) => ({ ...prev, ...srvProfile }));
             if (srvAccounts.length > 0) {
               setSmtpAccounts(srvAccounts);
@@ -105,19 +115,18 @@ export default function SettingsPage() {
                 })
               );
             }
-          } else if (cachedSettings) {
-            // Restore cached credentials to server if server was fresh/empty
-            const mergedProfile = { ...srvProfile, ...(cachedSettings.profile || {}) };
-            const mergedAccounts = cachedSettings.smtp_accounts || [];
-            setProfile(mergedProfile);
-            setSmtpAccounts(mergedAccounts);
+          } else if (cacheHasCredentials) {
+            // Browser has credentials, but server is fresh/empty (e.g. Vercel cold restart) -> sync back to server!
+            const merged = { ...srvProfile, ...cachedProfile };
+            setProfile(merged);
+            setSmtpAccounts(cachedAccounts);
             fetch('/api/settings', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 profile: {
-                  ...mergedProfile,
-                  smtp_accounts: mergedAccounts,
+                  ...merged,
+                  smtp_accounts: cachedAccounts,
                 },
               }),
             });
@@ -126,6 +135,24 @@ export default function SettingsPage() {
       })
       .catch((err) => console.error('Failed to fetch settings:', err));
   }, []);
+
+  const updateProfileField = (field: string, value: any) => {
+    setProfile((prev: any) => {
+      const updated = { ...prev, [field]: value };
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(
+            'automailer_smtp_settings',
+            JSON.stringify({
+              profile: updated,
+              smtp_accounts: smtpAccounts,
+            })
+          );
+        } catch (e) {}
+      }
+      return updated;
+    });
+  };
 
   const handleOpenAddModal = () => {
     setEditingAccountId(null);
@@ -522,7 +549,7 @@ export default function SettingsPage() {
                 <input
                   type="text"
                   value={profile.smtp_host || 'smtp.gmail.com'}
-                  onChange={(e) => setProfile({ ...profile, smtp_host: e.target.value })}
+                  onChange={(e) => updateProfileField('smtp_host', e.target.value)}
                   className="mt-1.5 w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2 text-xs font-mono text-zinc-900 shadow-sm focus:border-blue-500 focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
                 />
               </div>
@@ -534,7 +561,7 @@ export default function SettingsPage() {
                 <input
                   type="number"
                   value={profile.smtp_port || 587}
-                  onChange={(e) => setProfile({ ...profile, smtp_port: parseInt(e.target.value) })}
+                  onChange={(e) => updateProfileField('smtp_port', parseInt(e.target.value) || 587)}
                   className="mt-1.5 w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2 text-xs font-mono text-zinc-900 shadow-sm focus:border-blue-500 focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
                 />
               </div>
@@ -548,7 +575,7 @@ export default function SettingsPage() {
                   autoComplete="off"
                   placeholder="e.g. AKIAIOSFODNN7EXAMPLE or sender@yourdomain.com"
                   value={profile.smtp_user || ''}
-                  onChange={(e) => setProfile({ ...profile, smtp_user: e.target.value })}
+                  onChange={(e) => updateProfileField('smtp_user', e.target.value)}
                   className="mt-1.5 w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2 text-xs font-semibold text-zinc-900 shadow-sm focus:border-blue-500 focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
                 />
               </div>
@@ -563,7 +590,7 @@ export default function SettingsPage() {
                     autoComplete="new-password"
                     placeholder="SES SMTP Password or Gmail App Password"
                     value={profile.smtp_pass || ''}
-                    onChange={(e) => setProfile({ ...profile, smtp_pass: e.target.value })}
+                    onChange={(e) => updateProfileField('smtp_pass', e.target.value)}
                     className="w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2 pr-10 text-xs font-mono text-zinc-900 shadow-sm focus:border-blue-500 focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
                   />
                   <button
@@ -585,7 +612,7 @@ export default function SettingsPage() {
                   type="email"
                   placeholder="e.g. rahul@growmoredigitally.in"
                   value={profile.reply_to_email || ''}
-                  onChange={(e) => setProfile({ ...profile, reply_to_email: e.target.value })}
+                  onChange={(e) => updateProfileField('reply_to_email', e.target.value)}
                   className="mt-1.5 w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2 text-xs font-semibold text-zinc-900 shadow-sm focus:border-blue-500 focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
                 />
               </div>
@@ -598,10 +625,26 @@ export default function SettingsPage() {
                   type="text"
                   placeholder="e.g. Rahul Goswami"
                   value={profile.sender_name || ''}
-                  onChange={(e) => setProfile({ ...profile, sender_name: e.target.value })}
+                  onChange={(e) => updateProfileField('sender_name', e.target.value)}
                   className="mt-1.5 w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2 text-xs font-semibold text-zinc-900 shadow-sm focus:border-blue-500 focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
                 />
               </div>
+            </div>
+
+            {/* Primary SMTP Dedicated Save Action */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-zinc-200/80 dark:border-zinc-800">
+              <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                💾 Credentials are saved instantly to your browser and persistent storage.
+              </span>
+              <button
+                type="button"
+                onClick={() => handleSaveSettings()}
+                disabled={isSaving}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white shadow-md hover:bg-blue-700 disabled:opacity-50 cursor-pointer"
+              >
+                <Save className="h-4 w-4" />
+                <span>{isSaving ? 'Saving...' : 'Save Primary SMTP Credentials'}</span>
+              </button>
             </div>
 
             {/* Test Connection Button */}

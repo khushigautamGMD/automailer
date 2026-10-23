@@ -1,20 +1,27 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-anon-key';
+const DEFAULT_SUPABASE_URL = 'https://seojzxgnxwwcmamlylgc.supabase.co';
+const DEFAULT_SUPABASE_KEY = 'sb_publishable_tjs5TjayD8B6L0rwqubpGA_l57nWF9v';
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export function getSupabaseUrl(): string {
+  const envUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+  if (envUrl && envUrl.startsWith('https://') && !envUrl.includes('placeholder') && !envUrl.includes('your-supabase-project')) {
+    return envUrl;
+  }
+  return DEFAULT_SUPABASE_URL;
+}
+
+export function getSupabaseKey(): string {
+  const envKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+  if (envKey && !envKey.includes('placeholder') && !envKey.includes('your-supabase-anon-key')) {
+    return envKey;
+  }
+  return DEFAULT_SUPABASE_KEY;
+}
 
 export function isSupabaseConfigured(): boolean {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  return Boolean(
-    url &&
-    url.startsWith('https://') &&
-    !url.includes('your-supabase-project') &&
-    !url.includes('placeholder') &&
-    key &&
-    !key.includes('your-supabase-anon-key') &&
-    !key.includes('placeholder')
-  );
+  return true;
 }
+
+export const supabase: SupabaseClient = createClient(getSupabaseUrl(), getSupabaseKey());
+

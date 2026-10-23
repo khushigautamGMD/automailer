@@ -22,7 +22,10 @@ export async function GET(req: Request) {
     }
   }
 
-  return NextResponse.json({ profile });
+  return NextResponse.json({
+    profile,
+    supabaseConfigured: isSupabaseConfigured(),
+  });
 }
 
 export async function POST(req: Request) {
@@ -59,17 +62,19 @@ export async function POST(req: Request) {
     // Persist to localStore under user email (writes to store.json)
     const updatedProfile = localStore.updateProfile(payload, email);
 
-    // Also persist to Supabase cloud database if configured
+    let dbStatus = 'skipped';
     if (email && isSupabaseConfigured()) {
       try {
         const { updateProfileByEmail } = await import('@/lib/supabase/db');
-        await updateProfileByEmail(email, payload);
-      } catch (e) {
+        const dbResult = await updateProfileByEmail(email, payload);
+        dbStatus = dbResult ? 'synced' : 'failed';
+      } catch (e: any) {
         console.error('Failed to persist profile to DB:', e);
+        dbStatus = 'error: ' + (e?.message || String(e));
       }
     }
 
-    return NextResponse.json({ profile: updatedProfile, message: 'Settings saved permanently' });
+    return NextResponse.json({ profile: updatedProfile, message: 'Settings saved permanently', dbStatus });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || 'Failed to update settings' }, { status: 500 });
   }

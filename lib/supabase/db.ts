@@ -1,5 +1,5 @@
 import { supabase, isSupabaseConfigured } from '@/lib/supabase/client';
-import { UserProfile, PlanTier, SmtpAccount } from '@/types';
+import { UserProfile, PlanTier, SmtpAccount, ContactList, Contact } from '@/types';
 
 /**
  * Database-backed profile storage using Supabase.
@@ -214,4 +214,240 @@ function getDefaultProfile(email: string = ''): UserProfile {
     default_rate_limit: 50,
     email_signature: '',
   };
+}
+
+/**
+ * ========================================================
+ * Contact Lists & Contacts Cloud DB Methods
+ * ========================================================
+ */
+
+export async function getListsByUser(userEmail: string): Promise<ContactList[]> {
+  if (!userEmail || !isSupabaseConfigured()) return [];
+  const cleanEmail = userEmail.trim().toLowerCase();
+
+  // 1. Try dedicated contact_lists table
+  try {
+    const { data, error } = await supabase
+      .from('contact_lists')
+      .select('*')
+      .eq('user_email', cleanEmail)
+      .order('created_at', { ascending: false });
+
+    if (!error && Array.isArray(data) && data.length > 0) {
+      return data.map((row) => ({
+        id: row.id,
+        name: row.name,
+        description: row.description || '',
+        tags: Array.isArray(row.tags) ? row.tags : [],
+        total_contacts: row.total_contacts || 0,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+      }));
+    }
+  } catch (err) {}
+
+  // 2. Fallback to profiles.saved_lists JSONB column
+  try {
+    const { data } = await supabase
+      .from('profiles')
+      .select('saved_lists')
+      .eq('email', cleanEmail)
+      .single();
+
+    if (data?.saved_lists && Array.isArray(data.saved_lists)) {
+      return data.saved_lists;
+    }
+  } catch (err) {}
+
+  return [];
+}
+
+export async function getContactsByUser(userEmail: string, listId?: string): Promise<Contact[]> {
+  if (!userEmail || !isSupabaseConfigured()) return [];
+  const cleanEmail = userEmail.trim().toLowerCase();
+
+  // 1. Try dedicated contacts table
+  try {
+    let query = supabase
+      .from('contacts')
+      .select('*')
+      .eq('user_email', cleanEmail);
+
+    if (listId && listId !== 'all') {
+      query = query.eq('list_id', listId);
+    }
+
+    const { data, error } = await query.order('created_at', { ascending: false });
+
+    if (!error && Array.isArray(data) && data.length > 0) {
+      return data.map((row) => ({
+        id: row.id,
+        list_id: row.list_id,
+        email: row.email,
+        first_name: row.first_name || '',
+        last_name: row.last_name || '',
+        company: row.company || '',
+        phone: row.phone || '',
+        status: row.status || 'active',
+        custom_fields: row.custom_fields || {},
+        created_at: row.created_at,
+      }));
+    }
+  } catch (err) {}
+
+  // 2. Fallback to profiles.saved_contacts JSONB column
+  try {
+    const { data } = await supabase
+      .from('profiles')
+      .select('saved_contacts')
+      .eq('email', cleanEmail)
+      .single();
+
+    if (data?.saved_contacts && Array.isArray(data.saved_contacts)) {
+      if (!listId || listId === 'all') return data.saved_contacts;
+      return data.saved_contacts.filter((c: any) => c.list_id === listId);
+    }
+  } catch (err) {}
+
+  return [];
+}
+
+export async function saveContactsToDb(userEmail: string, listId: string, newContacts: Contact[]): Promise<void> {
+  if (!userEmail || !isSupabaseConfigured() || newContacts.length === 0) return;
+  const cleanEmail = userEmail.trim().toLowerCase();
+
+  // 1. Insert into contacts table if available
+  try {
+    const dbRows = newContacts.map((c) => ({
+      id: c.id,
+      user_email: cleanEmail,
+      list_id: listId,
+      email: c.email,
+      first_name: c.first_name || '',
+      last_name: c.last_name || '',
+      company: c.company || '',
+      phone: c.phone || '',
+      status: c.status || 'active',
+      custom_fields: c.custom_fields || {},
+    }));
+
+    await supabase.from('contacts').upsert(dbRows);
+
+    // Update list count in contact_lists
+    const { count } = await supabase
+      .from('contacts')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_email', cleanEmail)
+      .eq('list_id', listId);
+
+    if (typeof count === 'number') {
+      await supabase
+        .from('contact_lists')
+        .update({ total_contacts: count, updated_at: new Date().toISOString() })
+        .eq('id', listId)
+        .eq('user_email', cleanEmail);
+    }
+  } catch (err) {}
+
+  // 2. Backup into profiles.saved_contacts
+  try {
+    const { data } = await supabase
+      .from('profiles')
+      .select('saved_contacts')
+      .eq('email', cleanEmail)
+      .single();
+
+    const existing: Contact[] = (data?.saved_contacts && Array.isArray(data.saved_contacts)) ? data.saved_contacts : [];
+    const newIds = new Set(newContacts.map((c) => c.id));
+    const merged = [...newContacts, ...existing.filter((c) => !newIds.has(c.id))];
+
+    await supabase
+      .from('profiles')
+      .update({ saved_contacts: merged })
+      .eq('email', cleanEmail);
+  } catch (err) {}
+}
+
+export async function saveListToDb(userEmail: string, list: ContactList): Promise<void> {
+  if (!userEmail || !isSupabaseConfigured()) return;
+  const cleanEmail = userEmail.trim().toLowerCase();
+
+  try {
+    await supabase.from('contact_lists').upsert({
+      id: list.id,
+      user_email: cleanEmail,
+      name: list.name,
+      description: list.description || '',
+      tags: list.tags || [],
+      total_contacts: list.total_contacts || 0,
+      created_at: list.created_at,
+    });
+  } catch (err) {}
+
+  try {
+    const { data } = await supabase
+      .from('profiles')
+      .select('saved_lists')
+      .eq('email', cleanEmail)
+      .single();
+
+    const existing: ContactList[] = (data?.saved_lists && Array.isArray(data.saved_lists)) ? data.saved_lists : [];
+    const filtered = existing.filter((l) => l.id !== list.id);
+    const updated = [list, ...filtered];
+
+    await supabase
+      .from('profiles')
+      .update({ saved_lists: updated })
+      .eq('email', cleanEmail);
+  } catch (err) {}
+}
+
+export async function deleteContactFromDb(userEmail: string, contactId: string): Promise<void> {
+  if (!userEmail || !isSupabaseConfigured() || !contactId) return;
+  const cleanEmail = userEmail.trim().toLowerCase();
+
+  try {
+    await supabase.from('contacts').delete().eq('id', contactId).eq('user_email', cleanEmail);
+  } catch (err) {}
+
+  try {
+    const { data } = await supabase
+      .from('profiles')
+      .select('saved_contacts')
+      .eq('email', cleanEmail)
+      .single();
+
+    if (data?.saved_contacts && Array.isArray(data.saved_contacts)) {
+      const updated = data.saved_contacts.filter((c: any) => c.id !== contactId);
+      await supabase.from('profiles').update({ saved_contacts: updated }).eq('email', cleanEmail);
+    }
+  } catch (err) {}
+}
+
+export async function deleteListFromDb(userEmail: string, listId: string): Promise<void> {
+  if (!userEmail || !isSupabaseConfigured() || !listId) return;
+  const cleanEmail = userEmail.trim().toLowerCase();
+
+  try {
+    await supabase.from('contacts').delete().eq('list_id', listId).eq('user_email', cleanEmail);
+    await supabase.from('contact_lists').delete().eq('id', listId).eq('user_email', cleanEmail);
+  } catch (err) {}
+
+  try {
+    const { data } = await supabase
+      .from('profiles')
+      .select('saved_lists, saved_contacts')
+      .eq('email', cleanEmail)
+      .single();
+
+    if (data) {
+      const updatedLists = (data.saved_lists || []).filter((l: any) => l.id !== listId);
+      const updatedContacts = (data.saved_contacts || []).filter((c: any) => c.list_id !== listId);
+      await supabase
+        .from('profiles')
+        .update({ saved_lists: updatedLists, saved_contacts: updatedContacts })
+        .eq('email', cleanEmail);
+    }
+  } catch (err) {}
 }

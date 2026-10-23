@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Navbar } from '@/components/layout/Navbar';
 import { GlassCard } from '@/components/ui/GlassCard';
@@ -8,6 +9,7 @@ import { CsvUploader } from '@/components/contacts/CsvUploader';
 import { Badge } from '@/components/ui/Badge';
 import { formatDate } from '@/lib/utils';
 import { ContactList, Contact, CsvValidationResult } from '@/types';
+import { supabase } from '@/lib/supabase/client';
 import { Users, Upload, Search, Plus, UserPlus, FileSpreadsheet, X, Trash2, AlertCircle } from 'lucide-react';
 
 export default function ContactsPage() {
@@ -18,6 +20,7 @@ export default function ContactsPage() {
   const [showImporter, setShowImporter] = useState<boolean>(false);
   const [showSingleMailModal, setShowSingleMailModal] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
+  const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
 
   // Single Mail Modal State
   const [singleEmail, setSingleEmail] = useState('');
@@ -26,14 +29,72 @@ export default function ContactsPage() {
   const [singleCompany, setSingleCompany] = useState('');
   const [singlePhone, setSinglePhone] = useState('');
 
-  const fetchContactsData = async () => {
+  const updateLocalStorageCache = (userEmail: string | null, newLists: ContactList[], newContacts: Contact[]) => {
+    if (typeof window === 'undefined') return;
     try {
-      setLoading(true);
-      const res = await fetch('/api/contacts');
+      const listsStr = JSON.stringify(newLists);
+      const contactsStr = JSON.stringify(newContacts);
+      if (userEmail) {
+        localStorage.setItem(`automailer_lists_${userEmail}`, listsStr);
+        localStorage.setItem(`automailer_contacts_${userEmail}`, contactsStr);
+      }
+      localStorage.setItem('automailer_lists', listsStr);
+      localStorage.setItem('automailer_contacts', contactsStr);
+    } catch (e) {}
+  };
+
+  const fetchContactsData = async (userEmailOverride?: string | null) => {
+    const emailToUse = (userEmailOverride !== undefined ? userEmailOverride : currentUserEmail)?.trim().toLowerCase() || '';
+
+    // 1. Immediately read from localStorage cache for instant display
+    let cachedLists: ContactList[] = [];
+    let cachedContacts: Contact[] = [];
+    if (typeof window !== 'undefined') {
+      try {
+        const specificListsRaw = emailToUse ? localStorage.getItem(`automailer_lists_${emailToUse}`) : null;
+        const globalListsRaw = localStorage.getItem('automailer_lists');
+        const listsRaw = specificListsRaw || globalListsRaw;
+        if (listsRaw) {
+          cachedLists = JSON.parse(listsRaw);
+          if (Array.isArray(cachedLists) && cachedLists.length > 0) setLists(cachedLists);
+        }
+
+        const specificContactsRaw = emailToUse ? localStorage.getItem(`automailer_contacts_${emailToUse}`) : null;
+        const globalContactsRaw = localStorage.getItem('automailer_contacts');
+        const contactsRaw = specificContactsRaw || globalContactsRaw;
+        if (contactsRaw) {
+          cachedContacts = JSON.parse(contactsRaw);
+          if (Array.isArray(cachedContacts) && cachedContacts.length > 0) setContacts(cachedContacts);
+        }
+      } catch (e) {}
+    }
+
+    try {
+      setLoading(cachedContacts.length === 0);
+      const url = '/api/contacts' + (emailToUse ? `?userEmail=${encodeURIComponent(emailToUse)}` : '');
+      const res = await fetch(url);
       const data = await res.json();
       if (res.ok) {
-        setLists(data.lists || []);
-        setContacts(data.contacts || []);
+        const serverLists: ContactList[] = data.lists || [];
+        const serverContacts: Contact[] = data.contacts || [];
+
+        if (serverLists.length > 0 || serverContacts.length > 0) {
+          setLists(serverLists);
+          setContacts(serverContacts);
+          updateLocalStorageCache(emailToUse, serverLists, serverContacts);
+        } else if (cachedContacts.length > 0) {
+          // If server was cold/empty but client had cached contacts, auto-sync cache to server!
+          fetch('/api/contacts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'sync_cache',
+              userEmail: emailToUse,
+              lists: cachedLists,
+              contacts: cachedContacts,
+            }),
+          });
+        }
       }
     } catch (err) {
       console.error('Failed to load contacts data:', err);
@@ -43,7 +104,31 @@ export default function ContactsPage() {
   };
 
   useEffect(() => {
-    fetchContactsData();
+    let resolvedEmail: string | null = null;
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('automailer_user');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed.email) resolvedEmail = parsed.email.trim().toLowerCase();
+        }
+      } catch (e) {}
+    }
+
+    if (resolvedEmail) {
+      setCurrentUserEmail(resolvedEmail);
+    }
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const sessionEmail = session?.user?.email?.trim().toLowerCase();
+      if (sessionEmail && sessionEmail !== resolvedEmail) {
+        resolvedEmail = sessionEmail;
+        setCurrentUserEmail(sessionEmail);
+        fetchContactsData(sessionEmail);
+      }
+    });
+
+    fetchContactsData(resolvedEmail);
   }, []);
 
   const handleValidationComplete = async (res: CsvValidationResult, listName: string) => {
@@ -55,6 +140,7 @@ export default function ContactsPage() {
         body: (() => {
           const fd = new FormData();
           fd.append('listName', listName || 'Imported Contact List');
+          if (currentUserEmail) fd.append('userEmail', currentUserEmail);
           fd.append(
             'csvText',
             `email,firstname,lastname,company,phone\n` +
@@ -90,6 +176,7 @@ export default function ContactsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'add_contact',
+          userEmail: currentUserEmail,
           listId: targetListId,
           email: singleEmail.trim(),
           firstName: singleFirstName.trim() || undefined,
@@ -118,11 +205,14 @@ export default function ContactsPage() {
   const handleDeleteContact = async (contactId: string) => {
     if (!confirm('Are you sure you want to delete this contact?')) return;
     try {
-      const res = await fetch(`/api/contacts?contactId=${contactId}`, {
+      const url = `/api/contacts?contactId=${contactId}` + (currentUserEmail ? `&userEmail=${encodeURIComponent(currentUserEmail)}` : '');
+      const res = await fetch(url, {
         method: 'DELETE',
       });
       if (res.ok) {
-        setContacts(contacts.filter((c) => c.id !== contactId));
+        const updated = contacts.filter((c) => c.id !== contactId);
+        setContacts(updated);
+        updateLocalStorageCache(currentUserEmail, lists, updated);
       }
     } catch (err) {
       console.error('Failed to delete contact:', err);
@@ -132,7 +222,8 @@ export default function ContactsPage() {
   const handleDeleteList = async (listId: string) => {
     if (!confirm('Are you sure you want to delete this list and all its contacts?')) return;
     try {
-      const res = await fetch(`/api/contacts?listId=${listId}`, {
+      const url = `/api/contacts?listId=${listId}` + (currentUserEmail ? `&userEmail=${encodeURIComponent(currentUserEmail)}` : '');
+      const res = await fetch(url, {
         method: 'DELETE',
       });
       if (res.ok) {
@@ -194,6 +285,45 @@ export default function ContactsPage() {
               </button>
             </div>
           </div>
+
+          {/* Cloud Storage Status Banner */}
+          {currentUserEmail ? (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-blue-500/30 bg-blue-500/10 p-4 text-xs">
+              <div className="flex items-center gap-2.5">
+                <span className="flex h-3 w-3 shrink-0 rounded-full bg-emerald-500 ring-4 ring-emerald-500/20 animate-pulse" />
+                <div>
+                  <div className="font-bold text-zinc-900 dark:text-white flex items-center gap-2">
+                    <span>Cloud Storage Active:</span>
+                    <span className="font-mono text-blue-600 dark:text-blue-400 font-bold">{currentUserEmail}</span>
+                  </div>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                    Your contact lists are permanently preserved in your cloud database and will never be removed after logout or device change.
+                  </p>
+                </div>
+              </div>
+              <span className="shrink-0 rounded-xl bg-blue-600/20 px-3 py-1 text-[11px] font-extrabold text-blue-600 dark:text-blue-300">
+                ☁️ Permanent Cloud Storage
+              </span>
+            </div>
+          ) : (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs">
+              <div className="flex items-center gap-2.5">
+                <AlertCircle className="h-5 w-5 shrink-0 text-amber-500" />
+                <div>
+                  <strong className="text-zinc-900 dark:text-white">Local Device Mode (Guest)</strong>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                    You are not logged in. Contacts are stored only in this browser session. Sign in to permanently save your contacts to the cloud.
+                  </p>
+                </div>
+              </div>
+              <Link
+                href="/login?redirect=/contacts"
+                className="inline-flex items-center gap-1.5 shrink-0 rounded-xl bg-amber-600 px-3.5 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-amber-700 transition-colors"
+              >
+                Sign In to Save in Cloud →
+              </Link>
+            </div>
+          )}
 
           {/* Collapsible Importer */}
           {showImporter && (

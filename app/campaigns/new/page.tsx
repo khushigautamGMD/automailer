@@ -89,7 +89,8 @@ export default function NewCampaignWizard() {
       });
 
     // Fetch user's real saved contact lists
-    fetch('/api/contacts')
+    const contactsUrl = '/api/contacts' + (userEmail ? `?userEmail=${encodeURIComponent(userEmail)}` : '');
+    fetch(contactsUrl)
       .then((res) => res.json())
       .then((data) => {
         const savedLists = data.lists || [];
@@ -108,11 +109,19 @@ export default function NewCampaignWizard() {
     if (res.valid.length > 0) {
       // Auto-upload valid contacts to localStore immediately so list ID is ready!
       try {
+        let userEmail = '';
+        if (typeof window !== 'undefined') {
+          try {
+            const u = localStorage.getItem('automailer_user');
+            if (u) userEmail = JSON.parse(u).email || '';
+          } catch (e) {}
+        }
         const uploadRes = await fetch('/api/upload', {
           method: 'POST',
           body: (() => {
             const fd = new FormData();
             fd.append('listName', listName || `${name} List`);
+            if (userEmail) fd.append('userEmail', userEmail);
             fd.append(
               'csvText',
               `email,firstname,lastname,company,phone\n` +

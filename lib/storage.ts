@@ -151,6 +151,8 @@ interface GlobalStoreState {
   templates: EmailTemplate[];
   lists: ContactList[];
   contacts: Contact[];
+  userLists?: Record<string, ContactList[]>;
+  userContacts?: Record<string, Contact[]>;
   campaigns: Campaign[];
   logs: EmailLog[];
 }
@@ -168,6 +170,8 @@ function loadFromDisk(): GlobalStoreState {
           templates: parsed.templates || DEFAULT_TEMPLATES,
           lists: parsed.lists || DEFAULT_LISTS,
           contacts: parsed.contacts || DEFAULT_CONTACTS,
+          userLists: parsed.userLists || {},
+          userContacts: parsed.userContacts || {},
           campaigns: parsed.campaigns || DEFAULT_CAMPAIGNS,
           logs: parsed.logs || [],
         };
@@ -182,6 +186,8 @@ function loadFromDisk(): GlobalStoreState {
     templates: [...DEFAULT_TEMPLATES],
     lists: [...DEFAULT_LISTS],
     contacts: [...DEFAULT_CONTACTS],
+    userLists: {},
+    userContacts: {},
     campaigns: [...DEFAULT_CAMPAIGNS],
     logs: [],
   };
@@ -218,6 +224,8 @@ function syncFromDisk() {
         if (parsed.templates) globalStore.templates = parsed.templates;
         if (parsed.lists) globalStore.lists = parsed.lists;
         if (parsed.contacts) globalStore.contacts = parsed.contacts;
+        if (parsed.userLists) globalStore.userLists = parsed.userLists;
+        if (parsed.userContacts) globalStore.userContacts = parsed.userContacts;
         if (parsed.campaigns) globalStore.campaigns = parsed.campaigns;
         if (parsed.logs) globalStore.logs = parsed.logs;
       }
@@ -281,11 +289,18 @@ export const localStore = {
     saveToDisk(globalStore);
   },
 
-  getLists: () => {
+  getLists: (userEmail?: string) => {
     syncFromDisk();
+    if (userEmail && userEmail.trim()) {
+      const key = userEmail.trim().toLowerCase();
+      if (!globalStore.userLists) globalStore.userLists = {};
+      if (globalStore.userLists[key] && globalStore.userLists[key].length > 0) {
+        return globalStore.userLists[key];
+      }
+    }
     return globalStore.lists;
   },
-  addList: (list: { name: string; description?: string; tags?: string[] }) => {
+  addList: (list: { name: string; description?: string; tags?: string[] }, userEmail?: string) => {
     syncFromDisk();
     const newList: ContactList = {
       id: `lst-${Date.now()}`,
@@ -296,39 +311,90 @@ export const localStore = {
       created_at: new Date().toISOString(),
     };
     globalStore.lists.unshift(newList);
+
+    if (userEmail && userEmail.trim()) {
+      const key = userEmail.trim().toLowerCase();
+      if (!globalStore.userLists) globalStore.userLists = {};
+      if (!globalStore.userLists[key]) globalStore.userLists[key] = [];
+      globalStore.userLists[key].unshift(newList);
+    }
+
     saveToDisk(globalStore);
     return newList;
   },
-  deleteList: (id: string) => {
+  deleteList: (id: string, userEmail?: string) => {
     syncFromDisk();
     globalStore.lists = globalStore.lists.filter((l) => l.id !== id);
     globalStore.contacts = globalStore.contacts.filter((c) => c.list_id !== id);
+
+    if (userEmail && userEmail.trim()) {
+      const key = userEmail.trim().toLowerCase();
+      if (globalStore.userLists?.[key]) {
+        globalStore.userLists[key] = globalStore.userLists[key].filter((l) => l.id !== id);
+      }
+      if (globalStore.userContacts?.[key]) {
+        globalStore.userContacts[key] = globalStore.userContacts[key].filter((c) => c.list_id !== id);
+      }
+    }
+
     saveToDisk(globalStore);
   },
 
-  getContacts: (listId?: string) => {
+  getContacts: (userEmailOrListId?: string, optionalListId?: string) => {
     syncFromDisk();
-    if (!listId || listId === 'all') return globalStore.contacts;
-    return globalStore.contacts.filter((c) => c.list_id === listId);
+    let email: string | undefined;
+    let listId: string | undefined;
+
+    if (userEmailOrListId && userEmailOrListId.includes('@')) {
+      email = userEmailOrListId.trim().toLowerCase();
+      listId = optionalListId;
+    } else {
+      listId = userEmailOrListId;
+    }
+
+    let source = globalStore.contacts;
+    if (email) {
+      if (!globalStore.userContacts) globalStore.userContacts = {};
+      if (globalStore.userContacts[email] && globalStore.userContacts[email].length > 0) {
+        source = globalStore.userContacts[email];
+      }
+    }
+
+    if (!listId || listId === 'all') return source;
+    return source.filter((c) => c.list_id === listId);
   },
-  addContacts: (listId: string, newContacts: Omit<Contact, 'id' | 'list_id' | 'created_at'>[]) => {
+  addContacts: (listId: string, newContacts: Omit<Contact, 'id' | 'list_id' | 'created_at'>[], userEmail?: string) => {
     syncFromDisk();
-    const created = newContacts.map((c, idx) => ({
+    const created: Contact[] = newContacts.map((c, idx) => ({
       ...c,
       id: `cnt-${Date.now()}-${idx}`,
       list_id: listId,
       created_at: new Date().toISOString(),
     }));
     globalStore.contacts = [...created, ...globalStore.contacts];
-    // Update list count
+
     const list = globalStore.lists.find((l) => l.id === listId);
     if (list) {
       list.total_contacts = (list.total_contacts || 0) + created.length;
     }
+
+    if (userEmail && userEmail.trim()) {
+      const key = userEmail.trim().toLowerCase();
+      if (!globalStore.userContacts) globalStore.userContacts = {};
+      if (!globalStore.userContacts[key]) globalStore.userContacts[key] = [];
+      globalStore.userContacts[key] = [...created, ...globalStore.userContacts[key]];
+
+      if (!globalStore.userLists) globalStore.userLists = {};
+      if (globalStore.userLists[key]) {
+        const uList = globalStore.userLists[key].find((l) => l.id === listId);
+        if (uList) uList.total_contacts = (uList.total_contacts || 0) + created.length;
+      }
+    }
+
     saveToDisk(globalStore);
     return created;
   },
-  deleteContact: (id: string) => {
+  deleteContact: (id: string, userEmail?: string) => {
     syncFromDisk();
     const contact = globalStore.contacts.find((c) => c.id === id);
     if (contact) {
@@ -337,8 +403,37 @@ export const localStore = {
       if (list && list.total_contacts > 0) {
         list.total_contacts -= 1;
       }
-      saveToDisk(globalStore);
     }
+
+    if (userEmail && userEmail.trim()) {
+      const key = userEmail.trim().toLowerCase();
+      if (globalStore.userContacts?.[key]) {
+        const uContact = globalStore.userContacts[key].find((c) => c.id === id);
+        globalStore.userContacts[key] = globalStore.userContacts[key].filter((c) => c.id !== id);
+        if (uContact && globalStore.userLists?.[key]) {
+          const uList = globalStore.userLists[key].find((l) => l.id === uContact.list_id);
+          if (uList && uList.total_contacts > 0) uList.total_contacts -= 1;
+        }
+      }
+    }
+
+    saveToDisk(globalStore);
+  },
+  syncUserContacts: (userEmail: string, lists: ContactList[], contacts: Contact[]) => {
+    syncFromDisk();
+    if (!userEmail || !userEmail.trim()) return;
+    const key = userEmail.trim().toLowerCase();
+    if (!globalStore.userLists) globalStore.userLists = {};
+    if (!globalStore.userContacts) globalStore.userContacts = {};
+    globalStore.userLists[key] = lists;
+    globalStore.userContacts[key] = contacts;
+    if (globalStore.lists.length === 0 && lists.length > 0) {
+      globalStore.lists = lists;
+    }
+    if (globalStore.contacts.length === 0 && contacts.length > 0) {
+      globalStore.contacts = contacts;
+    }
+    saveToDisk(globalStore);
   },
 
   getCampaigns: () => {

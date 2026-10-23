@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { parseAndValidateCsv } from '@/lib/csv-parser';
 import { localStore } from '@/lib/storage';
 import { canImportContacts } from '@/lib/plan-limits';
+import { isSupabaseConfigured } from '@/lib/supabase/client';
+import { saveListToDb, saveContactsToDb } from '@/lib/supabase/db';
 
 export async function POST(req: Request) {
   try {
@@ -9,6 +11,7 @@ export async function POST(req: Request) {
     const file = formData.get('file') as File | null;
     const listName = (formData.get('listName') as string) || 'Imported List';
     const rawCsvText = formData.get('csvText') as string | null;
+    const userEmail = ((formData.get('userEmail') as string) || (formData.get('email') as string) || '').trim().toLowerCase();
 
     let csvContent = '';
     if (file) {
@@ -22,8 +25,8 @@ export async function POST(req: Request) {
     const validationResult = parseAndValidateCsv(csvContent);
 
     // Check contact import limit for user's plan
-    const profile = localStore.getProfile();
-    const existingContactsCount = localStore.getContacts().length;
+    const profile = localStore.getProfile(userEmail);
+    const existingContactsCount = localStore.getContacts(userEmail).length;
     const importCheck = canImportContacts(profile, existingContactsCount, validationResult.valid.length);
     const allowedContacts = validationResult.valid.slice(0, importCheck.allowedCount);
 
@@ -37,13 +40,24 @@ export async function POST(req: Request) {
     // Create list and store allowed contacts
     let newList = null;
     if (allowedContacts.length > 0) {
-      newList = localStore.addList({
-        name: listName,
-        description: `Imported ${allowedContacts.length} valid contacts on ${new Date().toLocaleDateString()}`,
-        tags: ['CSV Import'],
-      });
+      newList = localStore.addList(
+        {
+          name: listName,
+          description: `Imported ${allowedContacts.length} valid contacts on ${new Date().toLocaleDateString()}`,
+          tags: ['CSV Import'],
+        },
+        userEmail
+      );
 
-      localStore.addContacts(
+      if (userEmail && isSupabaseConfigured()) {
+        try {
+          await saveListToDb(userEmail, newList);
+        } catch (e) {
+          console.error('Failed to save list to DB in upload:', e);
+        }
+      }
+
+      const created = localStore.addContacts(
         newList.id,
         allowedContacts.map((item) => ({
           email: item.email,
@@ -57,8 +71,17 @@ export async function POST(req: Request) {
               .map(([k, v]) => [k, String(v)])
           ),
           status: 'active',
-        }))
+        })),
+        userEmail
       );
+
+      if (userEmail && isSupabaseConfigured()) {
+        try {
+          await saveContactsToDb(userEmail, newList.id, created);
+        } catch (e) {
+          console.error('Failed to save contacts to DB in upload:', e);
+        }
+      }
     }
 
     return NextResponse.json({

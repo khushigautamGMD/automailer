@@ -64,3 +64,52 @@ CREATE TRIGGER update_profiles_updated_at
   BEFORE UPDATE ON profiles
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================
+-- 2. Contact Lists Table
+-- ============================================
+CREATE TABLE IF NOT EXISTS contact_lists (
+  id TEXT PRIMARY KEY,
+  user_email TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  tags JSONB DEFAULT '[]'::jsonb,
+  total_contacts INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ============================================
+-- 3. Individual Contacts Table
+-- ============================================
+CREATE TABLE IF NOT EXISTS contacts (
+  id TEXT PRIMARY KEY,
+  user_email TEXT NOT NULL,
+  list_id TEXT NOT NULL,
+  email TEXT NOT NULL,
+  first_name TEXT DEFAULT '',
+  last_name TEXT DEFAULT '',
+  company TEXT DEFAULT '',
+  phone TEXT DEFAULT '',
+  status TEXT DEFAULT 'active',
+  custom_fields JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Enable Row Level Security
+ALTER TABLE contact_lists ENABLE ROW LEVEL SECURITY;
+ALTER TABLE contacts ENABLE ROW LEVEL SECURITY;
+
+-- Policies for API routes
+CREATE POLICY "Anon can manage contact_lists" ON contact_lists FOR ALL USING (true);
+CREATE POLICY "Anon can manage contacts" ON contacts FOR ALL USING (true);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_contact_lists_user ON contact_lists (user_email);
+CREATE INDEX IF NOT EXISTS idx_contacts_user ON contacts (user_email);
+CREATE INDEX IF NOT EXISTS idx_contacts_list ON contacts (list_id);
+
+-- Also add backup JSONB columns to profiles
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS saved_contacts JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS saved_lists JSONB DEFAULT '[]'::jsonb;
+

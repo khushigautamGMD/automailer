@@ -16,6 +16,8 @@ import {
   XCircle,
   BarChart2,
   Zap,
+  RotateCcw,
+  AlertCircle,
 } from 'lucide-react';
 
 export default function CampaignProgressPage({ params }: { params: Promise<{ id: string }> }) {
@@ -27,12 +29,43 @@ export default function CampaignProgressPage({ params }: { params: Promise<{ id:
   const [isActionLoading, setIsActionLoading] = useState(false);
 
   useEffect(() => {
+    // 0. Instant localStorage check so progress renders immediately with 0 ms blank screen
+    try {
+      const stored = localStorage.getItem('automailer_campaigns');
+      if (stored) {
+        const list: Campaign[] = JSON.parse(stored);
+        const match = list.find((c) => c.id === campaignId);
+        if (match) setCampaign(match);
+      }
+    } catch (e) {}
+
+    let userEmail = '';
+    try {
+      const u = localStorage.getItem('automailer_user');
+      if (u) userEmail = JSON.parse(u).email || '';
+    } catch (e) {}
+
+    const query = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
+
     // 1. Initial direct fetch for instant UI rendering without waiting
-    fetch('/api/campaigns')
+    fetch(`/api/campaigns${query}`)
       .then((res) => res.json())
       .then((data) => {
         const found = (data.campaigns || []).find((c: Campaign) => c.id === campaignId);
-        if (found) setCampaign(found);
+        if (found) {
+          setCampaign(found);
+          try {
+            const stored = localStorage.getItem('automailer_campaigns');
+            const list: Campaign[] = stored ? JSON.parse(stored) : [];
+            const idx = list.findIndex((c) => c.id === found.id);
+            if (idx !== -1) {
+              list[idx] = { ...list[idx], ...found };
+            } else {
+              list.unshift(found);
+            }
+            localStorage.setItem('automailer_campaigns', JSON.stringify(list));
+          } catch (e) {}
+        }
       })
       .catch((err) => console.error('Fetch campaign failed:', err));
 
@@ -44,6 +77,17 @@ export default function CampaignProgressPage({ params }: { params: Promise<{ id:
         const data = JSON.parse(event.data);
         if (data.campaign) {
           setCampaign(data.campaign);
+          try {
+            const stored = localStorage.getItem('automailer_campaigns');
+            const list: Campaign[] = stored ? JSON.parse(stored) : [];
+            const idx = list.findIndex((c) => c.id === data.campaign.id);
+            if (idx !== -1) {
+              list[idx] = { ...list[idx], ...data.campaign };
+            } else {
+              list.unshift(data.campaign);
+            }
+            localStorage.setItem('automailer_campaigns', JSON.stringify(list));
+          } catch (e) {}
         }
         if (data.logs) {
           setLogs(data.logs);
@@ -58,7 +102,7 @@ export default function CampaignProgressPage({ params }: { params: Promise<{ id:
     };
   }, [campaignId]);
 
-  const handleAction = async (action: 'pause' | 'resume' | 'cancel') => {
+  const handleAction = async (action: 'pause' | 'resume' | 'cancel' | 'retry') => {
     setIsActionLoading(true);
     try {
       await fetch(`/api/campaigns/${campaignId}/send`, {
@@ -144,6 +188,16 @@ export default function CampaignProgressPage({ params }: { params: Promise<{ id:
                   </button>
                 )}
 
+                {campaign.failed_count > 0 && campaign.status !== 'sending' && (
+                  <button
+                    onClick={() => handleAction('retry')}
+                    disabled={isActionLoading}
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 rounded-xl border border-blue-500/30 bg-blue-500/10 px-3.5 py-2 text-xs font-bold text-blue-600 dark:text-blue-400 shadow-sm hover:bg-blue-500/20"
+                  >
+                    <RotateCcw className="h-4 w-4" /> Retry Failed
+                  </button>
+                )}
+
                 <Link
                   href={`/campaigns/${campaign.id}/report`}
                   className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 rounded-xl border border-zinc-200 bg-white px-3.5 py-2 text-xs font-bold text-zinc-700 shadow-sm hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300"
@@ -179,6 +233,32 @@ export default function CampaignProgressPage({ params }: { params: Promise<{ id:
               </div>
             </div>
           </GlassCard>
+
+          {/* Failure Alert Banner */}
+          {campaign.failed_count > 0 && (
+            <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-4 space-y-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle className="h-5 w-5 text-rose-500 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="text-sm font-bold text-rose-600 dark:text-rose-400">
+                      {campaign.failed_count} Email{campaign.failed_count > 1 ? 's' : ''} Failed to Dispatch
+                    </h4>
+                    <p className="text-xs text-zinc-600 dark:text-zinc-300 mt-1">
+                      The outbound email server rejected the dispatch. Review the exact error message in the audit log below.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleAction('retry')}
+                  disabled={isActionLoading}
+                  className="shrink-0 flex items-center justify-center gap-1.5 rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-rose-700 disabled:opacity-50"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" /> Retry Failed Dispatch
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Live Activity Stream Table */}
           <GlassCard hoverEffect={false}>
@@ -216,7 +296,16 @@ export default function CampaignProgressPage({ params }: { params: Promise<{ id:
                         <td className="py-2.5 px-3">
                           {log.status === 'sent' && <Badge variant="green">Sent</Badge>}
                           {log.status === 'sending' && <Badge variant="blue" dot font-mono>Dispatching...</Badge>}
-                          {log.status === 'failed' && <Badge variant="rose">Failed</Badge>}
+                          {log.status === 'failed' && (
+                            <div className="space-y-1">
+                              <Badge variant="rose">Failed</Badge>
+                              {log.error_message && (
+                                <p className="text-[11px] text-rose-600 dark:text-rose-400 font-medium max-w-sm break-words leading-tight">
+                                  {log.error_message}
+                                </p>
+                              )}
+                            </div>
+                          )}
                           {log.status === 'pending' && <Badge variant="zinc">Pending</Badge>}
                         </td>
                         <td className="py-2.5 px-3 text-zinc-500 font-mono">

@@ -2,6 +2,7 @@ import { localStore } from '@/lib/storage';
 import { sendIndividualEmail } from '@/lib/email/dispatcher';
 import { Campaign, EmailLog } from '@/types';
 import { canSendMoreEmails, getUserLimits } from '@/lib/plan-limits';
+import { isSupabaseConfigured } from '@/lib/supabase/client';
 
 // In-memory campaign runner state tracking active execution loops
 const activeRunners: Record<string, boolean> = {};
@@ -47,13 +48,67 @@ export function cancelCampaignExecution(campaignId: string) {
   localStore.updateCampaign(campaignId, { status: 'cancelled' });
 }
 
+export function retryCampaignExecution(campaignId: string) {
+  activeRunners[campaignId] = false;
+  const campaign = localStore.getCampaign(campaignId);
+  if (!campaign) return;
+
+  const logs = localStore.getLogs(campaignId);
+  const remainingFailed = logs.filter((l) => l.status === 'failed').length;
+
+  localStore.updateCampaign(campaignId, {
+    status: 'draft',
+    failed_count: Math.max(0, (campaign.failed_count || 0) - remainingFailed),
+  });
+
+  // Reset failed logs to allow re-dispatch
+  for (const log of logs) {
+    if (log.status === 'failed') {
+      log.status = 'pending';
+      log.retry_count = 0;
+      delete log.error_message;
+    }
+  }
+
+  startCampaignExecution(campaignId);
+}
+
 async function executeQueueLoop(campaignId: string) {
   try {
     let campaign = localStore.getCampaign(campaignId);
     if (!campaign) return;
 
-    const contacts = localStore.getContacts(campaign.list_id);
-    let profile = localStore.getProfile();
+    let contacts = localStore.getContacts(campaign.list_id);
+    if (contacts.length === 0 && isSupabaseConfigured() && campaign.list_id) {
+      try {
+        const { getContactsByListId, getContactsByUser } = await import('@/lib/supabase/db');
+        const dbContacts = await getContactsByListId(campaign.list_id);
+        if (dbContacts.length > 0) {
+          contacts = dbContacts;
+          localStore.addContacts(campaign.list_id, dbContacts, campaign.user_email);
+        } else if (campaign.user_email) {
+          const userContacts = await getContactsByUser(campaign.user_email, campaign.list_id);
+          if (userContacts.length > 0) {
+            contacts = userContacts;
+            localStore.addContacts(campaign.list_id, userContacts, campaign.user_email);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to sync contacts in campaign runner:', err);
+      }
+    }
+    let profile = localStore.getProfile(campaign.user_email);
+    if ((!profile.smtp_user || !profile.smtp_pass) && isSupabaseConfigured()) {
+      try {
+        const { getProfileByEmail } = await import('@/lib/supabase/db');
+        const dbProfile = await getProfileByEmail(campaign.user_email || 'rahul@growmoredigitally.in');
+        if (dbProfile) {
+          profile = localStore.updateProfile(dbProfile, campaign.user_email || 'rahul@growmoredigitally.in');
+        }
+      } catch (err) {
+        console.error('Failed to sync profile from DB in runner:', err);
+      }
+    }
     const existingLogs = localStore.getLogs(campaignId);
     const limits = getUserLimits(profile);
 
@@ -188,6 +243,18 @@ async function executeQueueLoop(campaignId: string) {
       const totalProcessed = updatedLogs.filter((l) => l.status === 'sent' || l.status === 'failed').length;
       if (totalProcessed >= contacts.length) {
         localStore.updateCampaign(campaignId, { status: 'completed' });
+      }
+    }
+
+    const finalCampaign = localStore.getCampaign(campaignId);
+    if (finalCampaign && finalCampaign.user_email && isSupabaseConfigured()) {
+      try {
+        const { getCampaignsByUser, saveCampaignsToDb } = await import('@/lib/supabase/db');
+        const existing = await getCampaignsByUser(finalCampaign.user_email);
+        const filtered = existing.filter((c) => c.id !== campaignId);
+        await saveCampaignsToDb(finalCampaign.user_email, [finalCampaign, ...filtered]);
+      } catch (err) {
+        console.error('Failed to sync completed campaign to DB:', err);
       }
     }
   } catch (err) {

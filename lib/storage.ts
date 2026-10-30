@@ -27,6 +27,24 @@ const DEFAULT_PROFILE: UserProfile = {
 
 const DEFAULT_TEMPLATES: EmailTemplate[] = [
   {
+    id: 'tpl-primary-inbox-direct',
+    name: '🎯 1-to-1 Conversational (Primary Inbox Optimized)',
+    subject: 'Quick question regarding {{company}}',
+    preview_text: 'Short follow-up for your team',
+    category: 'Cold Outreach',
+    variables: ['firstname', 'lastname', 'company', 'email'],
+    created_at: new Date().toISOString(),
+    body_html: `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; color: #1e293b; line-height: 1.6;">
+  <p>Hi {{firstname}},</p>
+  <p>I hope you are having a productive week at {{company}}.</p>
+  <p>I am reaching out to share how our digital solutions and campaign automation can help your team scale operations faster.</p>
+  <p>You can check out our overview and case studies here: <a href="https://growmoredigitally.in" target="_blank" style="color: #2563eb; text-decoration: underline;">https://growmoredigitally.in</a></p>
+  <p>Would you have 5 minutes for a quick chat sometime this week?</p>
+  <br>
+  <p>Best regards,<br><strong>Rahul Goswami</strong><br><span style="color: #64748b; font-size: 13px;">GrowMore Digitally</span></p>
+</div>`,
+  },
+  {
     id: 'tpl-affiliate-review',
     name: 'Product Review & Feature Breakdown',
     subject: 'Honest Breakdown: Is {{company}} missing out on this tool?',
@@ -153,6 +171,7 @@ interface GlobalStoreState {
   contacts: Contact[];
   userLists?: Record<string, ContactList[]>;
   userContacts?: Record<string, Contact[]>;
+  userCampaigns?: Record<string, Campaign[]>;
   campaigns: Campaign[];
   logs: EmailLog[];
 }
@@ -172,6 +191,7 @@ function loadFromDisk(): GlobalStoreState {
           contacts: parsed.contacts || DEFAULT_CONTACTS,
           userLists: parsed.userLists || {},
           userContacts: parsed.userContacts || {},
+          userCampaigns: parsed.userCampaigns || {},
           campaigns: parsed.campaigns || DEFAULT_CAMPAIGNS,
           logs: parsed.logs || [],
         };
@@ -188,6 +208,7 @@ function loadFromDisk(): GlobalStoreState {
     contacts: [...DEFAULT_CONTACTS],
     userLists: {},
     userContacts: {},
+    userCampaigns: {},
     campaigns: [...DEFAULT_CAMPAIGNS],
     logs: [],
   };
@@ -226,6 +247,7 @@ function syncFromDisk() {
         if (parsed.contacts) globalStore.contacts = parsed.contacts;
         if (parsed.userLists) globalStore.userLists = parsed.userLists;
         if (parsed.userContacts) globalStore.userContacts = parsed.userContacts;
+        if (parsed.userCampaigns) globalStore.userCampaigns = parsed.userCampaigns;
         if (parsed.campaigns) globalStore.campaigns = parsed.campaigns;
         if (parsed.logs) globalStore.logs = parsed.logs;
       }
@@ -436,13 +458,30 @@ export const localStore = {
     saveToDisk(globalStore);
   },
 
-  getCampaigns: () => {
+  getCampaigns: (userEmail?: string) => {
     syncFromDisk();
+    if (userEmail && userEmail.trim()) {
+      const key = userEmail.trim().toLowerCase();
+      if (!globalStore.userCampaigns) globalStore.userCampaigns = {};
+      if (globalStore.userCampaigns[key] && globalStore.userCampaigns[key].length > 0) {
+        return globalStore.userCampaigns[key];
+      }
+      const userMatches = globalStore.campaigns.filter((c) => c.user_email && c.user_email.toLowerCase() === key);
+      if (userMatches.length > 0) return userMatches;
+    }
     return globalStore.campaigns;
   },
   getCampaign: (id: string) => {
     syncFromDisk();
-    return globalStore.campaigns.find((c) => c.id === id);
+    const found = globalStore.campaigns.find((c) => c.id === id);
+    if (found) return found;
+    if (globalStore.userCampaigns) {
+      for (const key of Object.keys(globalStore.userCampaigns)) {
+        const uFound = globalStore.userCampaigns[key].find((c) => c.id === id);
+        if (uFound) return uFound;
+      }
+    }
+    return undefined;
   },
   addCampaign: (campaign: Omit<Campaign, 'id' | 'created_at' | 'sent_count' | 'failed_count' | 'open_count' | 'click_count' | 'bounced_count' | 'unsubscribed_count'>) => {
     syncFromDisk();
@@ -458,23 +497,71 @@ export const localStore = {
       unsubscribed_count: 0,
     };
     globalStore.campaigns.unshift(newCmp);
+
+    if (newCmp.user_email && newCmp.user_email.trim()) {
+      const key = newCmp.user_email.trim().toLowerCase();
+      if (!globalStore.userCampaigns) globalStore.userCampaigns = {};
+      if (!globalStore.userCampaigns[key]) globalStore.userCampaigns[key] = [];
+      globalStore.userCampaigns[key].unshift(newCmp);
+    }
+
     saveToDisk(globalStore);
     return newCmp;
   },
   updateCampaign: (id: string, updates: Partial<Campaign>) => {
     syncFromDisk();
+    let updatedCampaign: Campaign | null = null;
     const idx = globalStore.campaigns.findIndex((c) => c.id === id);
     if (idx !== -1) {
       globalStore.campaigns[idx] = { ...globalStore.campaigns[idx], ...updates };
-      saveToDisk(globalStore);
-      return globalStore.campaigns[idx];
+      updatedCampaign = globalStore.campaigns[idx];
     }
-    return null;
+    if (globalStore.userCampaigns) {
+      for (const key of Object.keys(globalStore.userCampaigns)) {
+        const uIdx = globalStore.userCampaigns[key].findIndex((c) => c.id === id);
+        if (uIdx !== -1) {
+          globalStore.userCampaigns[key][uIdx] = { ...globalStore.userCampaigns[key][uIdx], ...updates };
+          if (!updatedCampaign) updatedCampaign = globalStore.userCampaigns[key][uIdx];
+        }
+      }
+    }
+    saveToDisk(globalStore);
+    return updatedCampaign;
   },
-  deleteCampaign: (id: string) => {
+  syncUserCampaigns: (userEmail: string, campaigns: Campaign[]) => {
+    syncFromDisk();
+    if (!userEmail || !userEmail.trim()) return;
+    const key = userEmail.trim().toLowerCase();
+    if (!globalStore.userCampaigns) globalStore.userCampaigns = {};
+    globalStore.userCampaigns[key] = campaigns;
+
+    // Merge into globalStore.campaigns
+    const existingIds = new Set(globalStore.campaigns.map((c) => c.id));
+    for (const c of campaigns) {
+      if (!existingIds.has(c.id)) {
+        globalStore.campaigns.unshift(c);
+        existingIds.add(c.id);
+      } else {
+        const idx = globalStore.campaigns.findIndex((x) => x.id === c.id);
+        if (idx !== -1) {
+          globalStore.campaigns[idx] = { ...globalStore.campaigns[idx], ...c };
+        }
+      }
+    }
+    saveToDisk(globalStore);
+  },
+  deleteCampaign: (id: string, userEmail?: string) => {
     syncFromDisk();
     globalStore.campaigns = globalStore.campaigns.filter((c) => c.id !== id);
     globalStore.logs = globalStore.logs.filter((l) => l.campaign_id !== id);
+
+    if (userEmail && userEmail.trim()) {
+      const key = userEmail.trim().toLowerCase();
+      if (globalStore.userCampaigns?.[key]) {
+        globalStore.userCampaigns[key] = globalStore.userCampaigns[key].filter((c) => c.id !== id);
+      }
+    }
+
     saveToDisk(globalStore);
   },
 

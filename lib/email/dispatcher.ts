@@ -1,6 +1,6 @@
 import { Resend } from 'resend';
 import nodemailer from 'nodemailer';
-import { interpolateVariables } from '@/lib/utils';
+import { interpolateVariables, htmlToPlainText } from '@/lib/utils';
 import { SmtpAccount } from '@/types';
 
 export interface SendEmailPayload {
@@ -70,9 +70,9 @@ export async function sendIndividualEmail(payload: SendEmailPayload): Promise<Se
 
     const fromAddress = (
       (payload.senderEmail && payload.senderEmail.includes('@') ? payload.senderEmail : undefined) ||
-      (activeUser.includes('@') ? activeUser : undefined) ||
       (replyTo && replyTo.includes('@') ? replyTo : undefined) ||
-      'newsletter@yourdomain.com'
+      (activeUser.includes('@') ? activeUser : undefined) ||
+      (finalHost.includes('amazonaws.com') ? 'rahul@growmoredigitally.in' : 'newsletter@yourdomain.com')
     ).trim();
 
     try {
@@ -90,13 +90,19 @@ export async function sendIndividualEmail(payload: SendEmailPayload): Promise<Se
       });
 
       const validReplyTo = (replyTo && replyTo.includes('@')) ? replyTo : fromAddress;
+      const cleanSenderName = (senderName || 'Automailer').replace(/"/g, '').trim();
+      const plainText = htmlToPlainText(personalizedHtml);
 
       const info = await transporter.sendMail({
-        from: `"${senderName}" <${fromAddress}>`,
+        from: `"${cleanSenderName}" <${fromAddress}>`,
         to: to,
         replyTo: validReplyTo,
         subject: personalizedSubject,
+        text: plainText,
         html: personalizedHtml,
+        headers: {
+          'X-Auto-Response-Suppress': 'OOF, AutoReply',
+        },
       });
 
       return { success: true, messageId: info.messageId, senderUsed: fromAddress, provider: 'smtp' };
@@ -104,8 +110,8 @@ export async function sendIndividualEmail(payload: SendEmailPayload): Promise<Se
       let friendlyError = err.message || 'SMTP dispatch failed';
       if (friendlyError.includes('535') || friendlyError.includes('Username and Password not accepted') || friendlyError.includes('Invalid login') || friendlyError.includes('Authentication credentials invalid')) {
         friendlyError = `SMTP Credentials Rejected for ${activeUser}! Check that your AWS SES SMTP Username (starts with AKIA...) and SMTP Password are correct.`;
-      } else if (friendlyError.includes('Email address is not verified') || friendlyError.includes('MessageRejected') || friendlyError.includes('not verified')) {
-        friendlyError = `Amazon SES Sandbox Limitation: The recipient "${to}" or sender "${fromAddress}" is not verified in AWS SES. In Sandbox mode, verify both emails in AWS SES Console > Verified Identities (or Request Production Access).`;
+      } else if (friendlyError.includes('554') || friendlyError.includes('Email address is not verified') || friendlyError.includes('Message rejected') || friendlyError.includes('MessageRejected') || friendlyError.includes('not verified')) {
+        friendlyError = `Amazon SES Verification Error: Sender "${fromAddress}" or recipient "${to}" is not verified in AWS SES (US-EAST-1). Sender must use your verified domain (@growmoredigitally.in). If SES is in Sandbox mode, recipient must also be verified.`;
       } else if (friendlyError.includes('ENOTFOUND') || friendlyError.includes('EAI_AGAIN')) {
         friendlyError = `SMTP Host "${finalHost}" could not be reached. Check your internet connection and SMTP Host address.`;
       } else if (friendlyError.includes('ETIMEDOUT') || friendlyError.includes('ECONNREFUSED')) {
@@ -127,12 +133,14 @@ export async function sendIndividualEmail(payload: SendEmailPayload): Promise<Se
     try {
       const resend = new Resend(activeResendKey);
       const fromEmail = payload.senderEmail || 'onboarding@resend.dev';
+      const plainText = htmlToPlainText(personalizedHtml);
 
       const data = await resend.emails.send({
         from: `${senderName} <${fromEmail}>`,
         to: [to],
         replyTo: replyTo || fromEmail,
         subject: personalizedSubject,
+        text: plainText,
         html: personalizedHtml,
       });
 

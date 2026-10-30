@@ -4,6 +4,7 @@ import {
   pauseCampaignExecution,
   resumeCampaignExecution,
   cancelCampaignExecution,
+  retryCampaignExecution,
 } from '@/lib/queue/campaign-runner';
 import { localStore } from '@/lib/storage';
 import { canSendMoreEmails } from '@/lib/plan-limits';
@@ -38,6 +39,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     } else if (action === 'cancel') {
       cancelCampaignExecution(id);
       return NextResponse.json({ message: 'Campaign cancelled', campaign: localStore.getCampaign(id) });
+    } else if (action === 'retry') {
+      retryCampaignExecution(id);
+      return NextResponse.json({ message: 'Campaign retrying failed emails', campaign: localStore.getCampaign(id) });
     }
 
     return NextResponse.json({ error: 'Invalid action specified' }, { status: 400 });

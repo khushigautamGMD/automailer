@@ -78,6 +78,7 @@ export interface EmailTemplate {
 export interface Campaign {
   id: string;
   name: string;
+  user_email?: string;
   subject: string;
   preview_text?: string;
   sender_name: string;

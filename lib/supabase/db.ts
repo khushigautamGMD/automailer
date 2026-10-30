@@ -1,5 +1,5 @@
 import { supabase, isSupabaseConfigured } from '@/lib/supabase/client';
-import { UserProfile, PlanTier, SmtpAccount, ContactList, Contact } from '@/types';
+import { UserProfile, PlanTier, SmtpAccount, ContactList, Contact, Campaign } from '@/types';
 
 /**
  * Database-backed profile storage using Supabase.
@@ -313,6 +313,33 @@ export async function getContactsByUser(userEmail: string, listId?: string): Pro
   return [];
 }
 
+export async function getContactsByListId(listId: string): Promise<Contact[]> {
+  if (!listId || !isSupabaseConfigured()) return [];
+  try {
+    const { data, error } = await supabase
+      .from('contacts')
+      .select('*')
+      .eq('list_id', listId)
+      .order('created_at', { ascending: false });
+
+    if (!error && Array.isArray(data) && data.length > 0) {
+      return data.map((row) => ({
+        id: row.id,
+        list_id: row.list_id,
+        email: row.email,
+        first_name: row.first_name || '',
+        last_name: row.last_name || '',
+        company: row.company || '',
+        phone: row.phone || '',
+        status: row.status || 'active',
+        custom_fields: row.custom_fields || {},
+        created_at: row.created_at,
+      }));
+    }
+  } catch (err) {}
+  return [];
+}
+
 export async function saveContactsToDb(userEmail: string, listId: string, newContacts: Contact[]): Promise<void> {
   if (!userEmail || !isSupabaseConfigured() || newContacts.length === 0) return;
   const cleanEmail = userEmail.trim().toLowerCase();
@@ -450,4 +477,79 @@ export async function deleteListFromDb(userEmail: string, listId: string): Promi
         .eq('email', cleanEmail);
     }
   } catch (err) {}
+}
+
+/**
+ * ========================================================
+ * Campaign Cloud Persistence Methods
+ * Persists campaign history across serverless cold starts.
+ * ========================================================
+ */
+
+export async function getCampaignsByUser(userEmail: string): Promise<Campaign[]> {
+  if (!userEmail || !isSupabaseConfigured()) return [];
+  const cleanEmail = userEmail.trim().toLowerCase();
+
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('email_signature')
+      .eq('email', cleanEmail)
+      .single();
+
+    if (!error && data?.email_signature && typeof data.email_signature === 'string') {
+      const trimmed = data.email_signature.trim();
+      if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed as Campaign[];
+        } else if (parsed && Array.isArray(parsed.campaigns)) {
+          return parsed.campaigns as Campaign[];
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error fetching campaigns from DB:', err);
+  }
+
+  return [];
+}
+
+export async function saveCampaignsToDb(userEmail: string, campaigns: Campaign[]): Promise<void> {
+  if (!userEmail || !isSupabaseConfigured() || !Array.isArray(campaigns)) return;
+  const cleanEmail = userEmail.trim().toLowerCase();
+
+  try {
+    const sanitized = campaigns.slice(0, 50).map((c) => ({
+      id: c.id,
+      name: c.name,
+      user_email: cleanEmail,
+      subject: c.subject,
+      preview_text: c.preview_text || '',
+      sender_name: c.sender_name,
+      reply_to: c.reply_to,
+      template_id: c.template_id || null,
+      list_id: c.list_id || null,
+      body_html: c.body_html || '',
+      status: c.status,
+      speed_preset: c.speed_preset,
+      emails_per_minute: c.emails_per_minute || 50,
+      total_recipients: c.total_recipients || 0,
+      sent_count: c.sent_count || 0,
+      failed_count: c.failed_count || 0,
+      open_count: c.open_count || 0,
+      click_count: c.click_count || 0,
+      bounced_count: c.bounced_count || 0,
+      unsubscribed_count: c.unsubscribed_count || 0,
+      scheduled_at: c.scheduled_at,
+      created_at: c.created_at,
+    }));
+
+    await supabase
+      .from('profiles')
+      .update({ email_signature: JSON.stringify(sanitized) })
+      .eq('email', cleanEmail);
+  } catch (err) {
+    console.error('Error saving campaigns to DB:', err);
+  }
 }

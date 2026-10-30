@@ -141,9 +141,19 @@ export function EmailEditor({
     setShowButtonModal(false);
   };
 
-  const applyTemplate = (templateType: 'letter' | 'modern' | 'minimal') => {
+  const applyTemplate = (templateType: 'primary' | 'letter' | 'modern' | 'minimal') => {
     let tpl = '';
-    if (templateType === 'letter') {
+    if (templateType === 'primary') {
+      tpl = `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; color: #1e293b; line-height: 1.6;">
+  <p>Hi {{firstname}},</p>
+  <p>I hope you are having a productive week at {{company}}.</p>
+  <p>I am reaching out because I noticed your team might benefit from our digital workflow and campaign automation solutions.</p>
+  <p>You can check out our overview and case studies here: <a href="https://yourwebsite.com" target="_blank" style="color: #2563eb; text-decoration: underline;">https://yourwebsite.com</a></p>
+  <p>Would you have 5 minutes for a quick chat sometime this week?</p>
+  <br>
+  <p>Best regards,<br><strong>Rahul Goswami</strong><br><span style="color: #64748b; font-size: 13px;">GrowMore Digitally</span></p>
+</div>`;
+    } else if (templateType === 'letter') {
       tpl = `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #1e293b; line-height: 1.6; font-size: 15px;">
   <p>Hi {{firstname}},</p>
   <p>I hope this email finds you well at <strong>{{company}}</strong>.</p>
@@ -294,10 +304,18 @@ export function EmailEditor({
           </div>
 
           {/* Quick Starter Templates */}
-          <div className="flex items-center gap-1.5 text-xs">
+          <div className="flex items-center gap-1.5 text-xs overflow-x-auto">
             <span className="text-[11px] font-bold text-zinc-400 hidden sm:inline flex items-center gap-1">
               <LayoutTemplate className="h-3 w-3" /> Starter:
             </span>
+            <button
+              type="button"
+              onClick={() => applyTemplate('primary')}
+              className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-bold text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400"
+              title="1-to-1 Human format designed to bypass Gmail Promotions tab and land in Primary"
+            >
+              🎯 Primary Inbox
+            </button>
             <button
               type="button"
               onClick={() => applyTemplate('letter')}

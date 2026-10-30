@@ -18,10 +18,11 @@ export default function NewCampaignWizard() {
 
   // Step 1 Form Data
   const [name, setName] = useState('New Email Campaign');
-  const [subject, setSubject] = useState('Exclusive Access & Recipient Details for {{firstname}} at {{company}}');
-  const [previewText, setPreviewText] = useState('Get access to our product suite');
+  const [subject, setSubject] = useState('Quick question regarding {{company}}');
+  const [previewText, setPreviewText] = useState('Short message for your team');
   const [senderName, setSenderName] = useState('');
   const [replyTo, setReplyTo] = useState('');
+  const [step1Error, setStep1Error] = useState<string>('');
 
   // Step 2 Contact List Selection or CSV
   const [lists, setLists] = useState<ContactList[]>([]);
@@ -34,31 +35,14 @@ export default function NewCampaignWizard() {
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
   const [bodyHtml, setBodyHtml] = useState<string>(
-    `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 32px 24px; color: #1e293b; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px;">
-  <div style="text-align: center; margin-bottom: 24px;">
-    <span style="background-color: #dbeafe; color: #1d4ed8; font-size: 12px; font-weight: 700; padding: 6px 14px; border-radius: 9999px; text-transform: uppercase;">Exclusive Announcement</span>
-    <h2 style="color: #0f172a; font-size: 24px; font-weight: 800; margin-top: 16px; margin-bottom: 8px;">Hello {{firstname}},</h2>
-  </div>
-
-  <div style="font-size: 15px; line-height: 1.7; color: #334155; margin-bottom: 24px;">
-    <p>We are thrilled to connect with you and your team at <strong>{{company}}</strong>!</p>
-    
-    <div style="background-color: #f8fafc; border-left: 4px solid #2563eb; border-radius: 0 12px 12px 0; padding: 20px; margin: 20px 0;">
-      <h3 style="margin-top: 0; color: #2563eb; font-size: 18px; font-weight: 700;">🚀 Premium Features</h3>
-      <p style="margin-bottom: 12px; color: #475569; font-size: 14px;">Gain instant access to automated workflows, templates, and solutions.</p>
-    </div>
-  </div>
-
-  <div style="text-align: center; margin: 32px 0;">
-    <a href="https://yourproductlink.com" target="_blank" style="background-color: #2563eb; color: #ffffff; padding: 14px 32px; border-radius: 10px; text-decoration: none; font-size: 16px; font-weight: 700; display: inline-block;">
-      👉 Get Access Now
-    </a>
-  </div>
-
-  <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 32px 0 16px 0;" />
-  <p style="font-size: 13px; color: #94a3b8; text-align: center; margin: 0;">
-    Sent to {{email}} • Reply to unsubscribe.
-  </p>
+    `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; color: #1e293b; line-height: 1.6;">
+  <p>Hi {{firstname}},</p>
+  <p>I hope you are having a productive week at {{company}}.</p>
+  <p>I am reaching out to share how our digital solutions and campaign automation can help your team scale operations faster.</p>
+  <p>You can check out our overview and case studies here: <a href="https://growmoredigitally.in" target="_blank" style="color: #2563eb; text-decoration: underline;">https://growmoredigitally.in</a></p>
+  <p>Would you have 5 minutes for a quick chat sometime this week?</p>
+  <br>
+  <p>Best regards,<br><strong>Rahul Goswami</strong><br><span style="color: #64748b; font-size: 13px;">GrowMore Digitally</span></p>
 </div>`
   );
 
@@ -82,8 +66,12 @@ export default function NewCampaignWizard() {
       .then((data) => {
         if (data.profile) {
           if (data.profile.sender_name) setSenderName(data.profile.sender_name);
-          if (data.profile.reply_to_email || data.profile.smtp_user) {
-            setReplyTo(data.profile.reply_to_email || data.profile.smtp_user);
+          if (data.profile.reply_to_email && data.profile.reply_to_email.includes('@')) {
+            setReplyTo(data.profile.reply_to_email);
+          } else if (data.profile.email && data.profile.email.includes('@')) {
+            setReplyTo(data.profile.email);
+          } else if (data.profile.smtp_user && data.profile.smtp_user.includes('@')) {
+            setReplyTo(data.profile.smtp_user);
           }
         }
       });
@@ -154,10 +142,12 @@ export default function NewCampaignWizard() {
   };
 
   const handleStep2Next = () => {
-    if (!selectedListId && (!csvResult || csvResult.valid.length === 0)) {
-      setStep2Error('Please select an existing list or add at least 1 valid contact email!');
+    const totalCount = (csvResult && csvResult.valid.length > 0) ? csvResult.valid.length : listCount;
+    if (totalCount === 0) {
+      setStep2Error('The selected recipient list has 0 contacts. Please upload a CSV file or select a list with active contacts before continuing.');
       return;
     }
+    setStep2Error('');
     setStep(3);
   };
 
@@ -178,15 +168,30 @@ export default function NewCampaignWizard() {
   };
 
   const handleLaunchCampaign = async () => {
+    const totalCount = (csvResult && csvResult.valid.length > 0) ? csvResult.valid.length : listCount;
+    if (totalCount === 0) {
+      alert('Cannot launch campaign: 0 recipients detected. Please return to Step 2 and upload your contacts CSV.');
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const targetListId = selectedListId || 'lst-1';
+
+      let userEmail = '';
+      if (typeof window !== 'undefined') {
+        try {
+          const u = localStorage.getItem('automailer_user');
+          if (u) userEmail = JSON.parse(u).email || '';
+        } catch (e) {}
+      }
 
       const createRes = await fetch('/api/campaigns', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name,
+          user_email: userEmail,
           subject,
           preview_text: previewText,
           sender_name: senderName,
@@ -202,7 +207,18 @@ export default function NewCampaignWizard() {
       const createData = await createRes.json();
       if (!createRes.ok) throw new Error(createData.error || 'Failed to create campaign');
 
-      const campaignId = createData.campaign.id;
+      const createdCampaign = createData.campaign;
+      const campaignId = createdCampaign.id;
+
+      // Save to localStorage immediately so it survives any serverless cold start
+      if (typeof window !== 'undefined') {
+        try {
+          const stored = localStorage.getItem('automailer_campaigns');
+          const existing = stored ? JSON.parse(stored) : [];
+          const updated = [createdCampaign, ...existing.filter((c: any) => c.id !== campaignId)];
+          localStorage.setItem('automailer_campaigns', JSON.stringify(updated));
+        } catch (e) {}
+      }
 
       // Immediately launch sending queue process
       await fetch(`/api/campaigns/${campaignId}/send`, {
@@ -305,10 +321,17 @@ export default function NewCampaignWizard() {
                   </label>
                   <input
                     type="email"
+                    placeholder="e.g. rahul@growmoredigitally.in"
                     value={replyTo}
-                    onChange={(e) => setReplyTo(e.target.value)}
+                    onChange={(e) => {
+                      setReplyTo(e.target.value);
+                      setStep1Error('');
+                    }}
                     className="mt-1.5 w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2 text-sm text-zinc-900 shadow-sm focus:border-blue-500 focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
                   />
+                  <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                    💡 If sending via Amazon SES, use your verified sender email (e.g. <code>@growmoredigitally.in</code>)
+                  </p>
                 </div>
               </div>
 
@@ -324,10 +347,31 @@ export default function NewCampaignWizard() {
                 />
               </div>
 
+              {step1Error && (
+                <p className="text-xs font-bold text-rose-500 flex items-center gap-1">
+                  <AlertCircle className="h-4 w-4" /> {step1Error}
+                </p>
+              )}
+
               <div className="flex justify-end pt-4">
                 <button
                   type="button"
-                  onClick={() => setStep(2)}
+                  onClick={() => {
+                    if (!name.trim()) {
+                      setStep1Error('Please enter a Campaign Name.');
+                      return;
+                    }
+                    if (!senderName.trim()) {
+                      setStep1Error('Please enter a Sender Name.');
+                      return;
+                    }
+                    if (!replyTo.trim() || !replyTo.includes('@')) {
+                      setStep1Error('Please enter a valid Sender/Reply-To Email address (e.g. rahul@growmoredigitally.in).');
+                      return;
+                    }
+                    setStep1Error('');
+                    setStep(2);
+                  }}
                   className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white shadow-md hover:bg-blue-700"
                 >
                   Next: Select Recipients <ArrowRight className="h-4 w-4" />
@@ -416,9 +460,26 @@ export default function NewCampaignWizard() {
           {/* STEP 3: Template & Editor */}
           {step === 3 && (
             <GlassCard className="space-y-4">
-              <h3 className="text-base font-bold text-zinc-900 dark:text-white border-b border-zinc-100 pb-3 dark:border-zinc-800">
-                Step 3: Personalization & Digital Product Link
-              </h3>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-zinc-100 pb-3 dark:border-zinc-800">
+                <h3 className="text-base font-bold text-zinc-900 dark:text-white">
+                  Step 3: Personalization & Email Content
+                </h3>
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                  🎯 Primary Inbox Optimized Template Active
+                </span>
+              </div>
+
+              {/* Primary Inbox Guidance Banner */}
+              <div className="rounded-xl border border-blue-500/20 bg-blue-50/50 p-3.5 text-xs text-blue-900 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200 space-y-1">
+                <div className="font-bold flex items-center gap-1.5 text-blue-700 dark:text-blue-300">
+                  <span>💡 How to land in the Primary Inbox (instead of &quot;Promotions&quot; or &quot;All Mail&quot;):</span>
+                </div>
+                <ul className="list-disc list-inside space-y-0.5 text-[11px] text-zinc-600 dark:text-zinc-300">
+                  <li><strong>Human Conversational Style:</strong> Left-aligned text with standard paragraphs bypasses Gmail&apos;s promotional tab filters.</li>
+                  <li><strong>Avoid Heavy Marketing Elements:</strong> Big colorful buttons, badges, and unsubscribe footers trigger Gmail&apos;s &quot;Promotions&quot; category.</li>
+                  <li><strong>Natural Links:</strong> Use standard inline links (e.g. <code>https://yourwebsite.com</code>) rather than 200px wide graphic buttons.</li>
+                </ul>
+              </div>
 
               <EmailEditor
                 subject={subject}

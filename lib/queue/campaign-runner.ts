@@ -238,9 +238,9 @@ export async function checkAndExecuteScheduledCampaigns(): Promise<string[]> {
             );
           }
 
-          // Advance next_run_at while keeping campaign active for next cycle
+          // Advance next_run_at while executing current cycle
           localStore.updateCampaign(campaign.id, {
-            status: 'draft',
+            status: 'sending',
             scheduled_at: nextRun.toISOString(),
             next_run_at: nextRun.toISOString(),
             last_executed_at: new Date().toISOString(),
@@ -249,9 +249,9 @@ export async function checkAndExecuteScheduledCampaigns(): Promise<string[]> {
             failed_count: 0,
           });
         } else {
-          // One-time schedule
+          // One-time schedule starts sending
           localStore.updateCampaign(campaign.id, {
-            status: 'draft',
+            status: 'sending',
             last_executed_at: new Date().toISOString(),
             execution_count: (campaign.execution_count || 0) + 1,
           });

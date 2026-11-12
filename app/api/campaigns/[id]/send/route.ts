@@ -50,7 +50,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
             campaign.recurrence_interval_hours || 24
           );
           localStore.updateCampaign(id, {
-            status: 'draft',
+            status: 'sending',
             scheduled_at: next.toISOString(),
             next_run_at: next.toISOString(),
             last_executed_at: new Date().toISOString(),
@@ -59,7 +59,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           });
         } else {
           localStore.updateCampaign(id, {
-            status: 'draft',
+            status: 'sending',
             scheduled_at: undefined,
             next_run_at: undefined,
             last_executed_at: new Date().toISOString(),

@@ -374,16 +374,29 @@ export const localStore = {
       listId = userEmailOrListId;
     }
 
-    let source = globalStore.contacts;
-    if (email) {
-      if (!globalStore.userContacts) globalStore.userContacts = {};
-      if (globalStore.userContacts[email] && globalStore.userContacts[email].length > 0) {
-        source = globalStore.userContacts[email];
+    // 1. Direct match by email if specified
+    if (email && globalStore.userContacts?.[email] && globalStore.userContacts[email].length > 0) {
+      if (!listId || listId === 'all') return globalStore.userContacts[email];
+      const filtered = globalStore.userContacts[email].filter((c) => c.list_id === listId);
+      if (filtered.length > 0) return filtered;
+    }
+
+    // 2. Check globalStore.contacts
+    if (globalStore.contacts && globalStore.contacts.length > 0) {
+      if (!listId || listId === 'all') return globalStore.contacts;
+      const filtered = globalStore.contacts.filter((c) => c.list_id === listId);
+      if (filtered.length > 0) return filtered;
+    }
+
+    // 3. Fallback: Search across all userContacts stores for this listId
+    if (listId && listId !== 'all' && globalStore.userContacts) {
+      for (const userKey of Object.keys(globalStore.userContacts)) {
+        const matches = (globalStore.userContacts[userKey] || []).filter((c) => c.list_id === listId);
+        if (matches.length > 0) return matches;
       }
     }
 
-    if (!listId || listId === 'all') return source;
-    return source.filter((c) => c.list_id === listId);
+    return [];
   },
   addContacts: (listId: string, newContacts: Omit<Contact, 'id' | 'list_id' | 'created_at'>[], userEmail?: string) => {
     syncFromDisk();
@@ -462,14 +475,48 @@ export const localStore = {
     syncFromDisk();
     if (userEmail && userEmail.trim()) {
       const key = userEmail.trim().toLowerCase();
-      if (!globalStore.userCampaigns) globalStore.userCampaigns = {};
-      if (globalStore.userCampaigns[key] && globalStore.userCampaigns[key].length > 0) {
-        return globalStore.userCampaigns[key];
+      const map = new Map<string, Campaign>();
+      if (globalStore.userCampaigns?.[key]) {
+        for (const c of globalStore.userCampaigns[key]) {
+          if (c && c.id) map.set(c.id, c);
+        }
       }
-      const userMatches = globalStore.campaigns.filter((c) => c.user_email && c.user_email.toLowerCase() === key);
-      if (userMatches.length > 0) return userMatches;
+      for (const c of globalStore.campaigns) {
+        if (c && c.user_email && c.user_email.toLowerCase() === key) {
+          map.set(c.id, { ...(map.get(c.id) || {}), ...c });
+        }
+      }
+      if (map.size > 0) return Array.from(map.values());
     }
-    return globalStore.campaigns;
+
+    // When no email is passed (e.g. background scheduler engine), aggregate all campaigns across global and users!
+    const allMap = new Map<string, Campaign>();
+    if (globalStore.campaigns) {
+      for (const c of globalStore.campaigns) {
+        if (c && c.id) allMap.set(c.id, c);
+      }
+    }
+    if (globalStore.userCampaigns) {
+      for (const userKey of Object.keys(globalStore.userCampaigns)) {
+        for (const c of (globalStore.userCampaigns[userKey] || [])) {
+          if (c && c.id) {
+            allMap.set(c.id, { ...(allMap.get(c.id) || {}), ...c });
+          }
+        }
+      }
+    }
+    return Array.from(allMap.values());
+  },
+  getAllScheduledCampaigns: () => {
+    syncFromDisk();
+    const all = localStore.getCampaigns();
+    return all.filter((c) => c.status === 'scheduled');
+  },
+  resetCampaignLogsForRerun: (campaignId: string) => {
+    syncFromDisk();
+    // Clear logs for this campaign so all contacts receive fresh dispatch
+    globalStore.logs = globalStore.logs.filter((l) => l.campaign_id !== campaignId);
+    saveToDisk(globalStore);
   },
   getCampaign: (id: string) => {
     syncFromDisk();

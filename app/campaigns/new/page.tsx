@@ -9,8 +9,8 @@ import { CsvUploader } from '@/components/contacts/CsvUploader';
 import { EmailEditor } from '@/components/editor/EmailEditor';
 import { SpeedSelector } from '@/components/campaigns/SpeedSelector';
 import { Badge } from '@/components/ui/Badge';
-import { SpeedPreset, ContactList, EmailTemplate, CsvValidationResult } from '@/types';
-import { ArrowLeft, ArrowRight, Check, Send, Sparkles, FileSpreadsheet, Users, AlertCircle } from 'lucide-react';
+import { SpeedPreset, ContactList, EmailTemplate, CsvValidationResult, ScheduleType, RecurrencePattern } from '@/types';
+import { ArrowLeft, ArrowRight, Check, Send, Sparkles, FileSpreadsheet, Users, AlertCircle, Calendar, Clock, Repeat, ShieldCheck } from 'lucide-react';
 
 export default function NewCampaignWizard() {
   const router = useRouter();
@@ -49,6 +49,13 @@ export default function NewCampaignWizard() {
   // Step 4 Speed & Dispatch Options
   const [speedPreset, setSpeedPreset] = useState<SpeedPreset>('medium');
   const [customSpeed, setCustomSpeed] = useState<number>(50);
+  const [deliveryMode, setDeliveryMode] = useState<'now' | 'scheduled'>('now');
+  const [scheduleType, setScheduleType] = useState<ScheduleType>('once');
+  const [recurrencePattern, setRecurrencePattern] = useState<RecurrencePattern>('daily');
+  const [recurrenceIntervalHours, setRecurrenceIntervalHours] = useState<number>(24);
+  const [autoRetryFailed, setAutoRetryFailed] = useState<boolean>(true);
+  const [scheduledDateTime, setScheduledDateTime] = useState<string>('');
+  const [scheduleError, setScheduleError] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
@@ -167,12 +174,50 @@ export default function NewCampaignWizard() {
     if (!res.ok || !data.success) throw new Error(data.error || 'Test send failed');
   };
 
+  const getMinDateTimeString = () => {
+    const d = new Date(Date.now() + 3 * 60 * 1000);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  const setPresetTime = (hoursFromNow: number, targetHour?: number) => {
+    const d = new Date();
+    if (targetHour !== undefined) {
+      if (hoursFromNow >= 24) {
+        d.setDate(d.getDate() + 1);
+      }
+      d.setHours(targetHour, 0, 0, 0);
+      if (d.getTime() <= Date.now()) {
+        d.setDate(d.getDate() + 1);
+      }
+    } else {
+      d.setTime(d.getTime() + hoursFromNow * 3600 * 1000);
+    }
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const str = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    setScheduledDateTime(str);
+    setScheduleError('');
+  };
+
   const handleLaunchCampaign = async () => {
     const totalCount = (csvResult && csvResult.valid.length > 0) ? csvResult.valid.length : listCount;
     if (totalCount === 0) {
       alert('Cannot launch campaign: 0 recipients detected. Please return to Step 2 and upload your contacts CSV.');
       return;
     }
+
+    if (deliveryMode === 'scheduled') {
+      if (!scheduledDateTime) {
+        setScheduleError('Please select a date and time for the scheduled delivery.');
+        return;
+      }
+      const scheduledEpoch = new Date(scheduledDateTime).getTime();
+      if (isNaN(scheduledEpoch) || scheduledEpoch <= Date.now()) {
+        setScheduleError('Please select a future date and time (at least 2 minutes from now).');
+        return;
+      }
+    }
+    setScheduleError('');
 
     setIsSubmitting(true);
     try {
@@ -185,6 +230,9 @@ export default function NewCampaignWizard() {
           if (u) userEmail = JSON.parse(u).email || '';
         } catch (e) {}
       }
+
+      const isScheduled = deliveryMode === 'scheduled';
+      const scheduledIso = isScheduled ? new Date(scheduledDateTime).toISOString() : undefined;
 
       const createRes = await fetch('/api/campaigns', {
         method: 'POST',
@@ -201,6 +249,11 @@ export default function NewCampaignWizard() {
           body_html: bodyHtml,
           speed_preset: speedPreset,
           emails_per_minute: customSpeed,
+          scheduled_at: scheduledIso,
+          schedule_type: isScheduled ? scheduleType : undefined,
+          recurrence_pattern: isScheduled && scheduleType === 'recurring' ? recurrencePattern : undefined,
+          recurrence_interval_hours: recurrenceIntervalHours,
+          auto_retry_failed: autoRetryFailed,
         }),
       });
 
@@ -220,14 +273,19 @@ export default function NewCampaignWizard() {
         } catch (e) {}
       }
 
-      // Immediately launch sending queue process
-      await fetch(`/api/campaigns/${campaignId}/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'start' }),
-      });
+      if (isScheduled) {
+        alert(`Campaign "${name}" has been successfully scheduled! Delivery is automated.`);
+        router.push('/schedule');
+      } else {
+        // Immediately launch sending queue process
+        await fetch(`/api/campaigns/${campaignId}/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'start' }),
+        });
 
-      router.push(`/campaigns/${campaignId}/progress`);
+        router.push(`/campaigns/${campaignId}/progress`);
+      }
     } catch (err: any) {
       alert(`Error launching campaign: ${err.message}`);
       setIsSubmitting(false);
@@ -512,7 +570,7 @@ export default function NewCampaignWizard() {
           {step === 4 && (
             <GlassCard className="space-y-6">
               <h3 className="text-base font-bold text-zinc-900 dark:text-white border-b border-zinc-100 pb-3 dark:border-zinc-800">
-                Step 4: Speed Control & Dispatch
+                Step 4: Speed Control & Delivery Scheduling
               </h3>
 
               <SpeedSelector
@@ -522,14 +580,250 @@ export default function NewCampaignWizard() {
                 onCustomSpeedChange={setCustomSpeed}
               />
 
-              <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4 space-y-2">
-                <h4 className="text-xs font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-2">
-                  <Sparkles className="h-4 w-4" /> Ready for Immediate Launch
-                </h4>
-                <p className="text-xs text-zinc-600 dark:text-zinc-300">
-                  Target List: <strong>{listCount} Recipient Emails</strong>. Each email will be sent via your verified Gmail SMTP provider with rate limiting and live monitoring.
-                </p>
+              {/* Delivery Timing Options: Now vs Scheduled */}
+              <div className="space-y-3 pt-2 border-t border-zinc-200/80 dark:border-zinc-800">
+                <label className="block text-xs font-bold text-zinc-700 dark:text-zinc-300">
+                  Delivery Timing
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeliveryMode('now');
+                      setScheduleError('');
+                    }}
+                    className={`flex items-start gap-3 rounded-xl border p-4 text-left transition-all ${
+                      deliveryMode === 'now'
+                        ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-500/20 dark:border-blue-500 dark:bg-blue-500/10'
+                        : 'border-zinc-200 bg-white hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900'
+                    }`}
+                  >
+                    <Send className={`h-5 w-5 mt-0.5 shrink-0 ${deliveryMode === 'now' ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400'}`} />
+                    <div>
+                      <h4 className="text-xs font-bold text-zinc-900 dark:text-white">🚀 Send Immediately</h4>
+                      <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400 leading-snug">
+                        Queue and start dispatching emails right now via SMTP with live delivery monitoring.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeliveryMode('scheduled');
+                      if (!scheduledDateTime) {
+                        setPresetTime(1); // Default to +1 hour
+                      }
+                      setScheduleError('');
+                    }}
+                    className={`flex items-start gap-3 rounded-xl border p-4 text-left transition-all ${
+                      deliveryMode === 'scheduled'
+                        ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-500/20 dark:border-blue-500 dark:bg-blue-500/10'
+                        : 'border-zinc-200 bg-white hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900'
+                    }`}
+                  >
+                    <Calendar className={`h-5 w-5 mt-0.5 shrink-0 ${deliveryMode === 'scheduled' ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400'}`} />
+                    <div>
+                      <h4 className="text-xs font-bold text-zinc-900 dark:text-white">📅 Schedule for Later</h4>
+                      <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400 leading-snug">
+                        Pick a date and time. Automailer will automatically start sending when the time arrives.
+                      </p>
+                    </div>
+                  </button>
+                </div>
+
+                {/* Scheduled DateTime Picker & Quick Presets */}
+                {deliveryMode === 'scheduled' && (
+                  <div className="rounded-2xl border border-blue-500/30 bg-blue-50/40 dark:border-blue-500/20 dark:bg-blue-500/5 p-4 space-y-4">
+                    {/* Schedule Type Selection: Once vs Recurring */}
+                    <div className="space-y-1.5">
+                      <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200">
+                        Select Automation Schedule Type
+                      </span>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setScheduleType('once')}
+                          className={`flex items-center gap-2 p-2.5 rounded-xl border text-xs font-bold transition-all text-left ${
+                            scheduleType === 'once'
+                              ? 'border-blue-600 bg-blue-600 text-white shadow-xs'
+                              : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300'
+                          }`}
+                        >
+                          <Clock className="h-4 w-4 shrink-0" />
+                          <div>
+                            <div>One-Time Dispatch</div>
+                            <div className={`text-[10px] font-normal ${scheduleType === 'once' ? 'text-blue-100' : 'text-zinc-400'}`}>
+                              Send once at the scheduled date & time
+                            </div>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setScheduleType('recurring')}
+                          className={`flex items-center gap-2 p-2.5 rounded-xl border text-xs font-bold transition-all text-left ${
+                            scheduleType === 'recurring'
+                              ? 'border-blue-600 bg-blue-600 text-white shadow-xs'
+                              : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300'
+                          }`}
+                        >
+                          <Repeat className="h-4 w-4 shrink-0" />
+                          <div>
+                            <div>Automated Recurring</div>
+                            <div className={`text-[10px] font-normal ${scheduleType === 'recurring' ? 'text-blue-100' : 'text-zinc-400'}`}>
+                              Repeats every day, weekday, or week automatically
+                            </div>
+                          </div>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* If Recurring, choose recurrence frequency */}
+                    {scheduleType === 'recurring' && (
+                      <div className="space-y-2 rounded-xl bg-white dark:bg-zinc-900 p-3.5 border border-zinc-200 dark:border-zinc-800">
+                        <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200 flex items-center gap-1.5">
+                          <Repeat className="h-3.5 w-3.5 text-blue-500" /> Choose Repeat Frequency
+                        </span>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          {[
+                            { key: 'daily', label: 'Every Day' },
+                            { key: 'weekdays', label: 'Weekdays (Mon-Fri)' },
+                            { key: 'weekly', label: 'Every Week' },
+                            { key: 'monthly', label: 'Every Month' },
+                          ].map((item) => (
+                            <button
+                              key={item.key}
+                              type="button"
+                              onClick={() => setRecurrencePattern(item.key as RecurrencePattern)}
+                              className={`p-2 rounded-lg border text-xs font-semibold text-center transition-all ${
+                                recurrencePattern === item.key
+                                  ? 'border-blue-600 bg-blue-50 text-blue-600 font-bold dark:bg-blue-500/20 dark:text-blue-300'
+                                  : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-400'
+                              }`}
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200 flex items-center gap-1.5">
+                        <Clock className="h-4 w-4 text-blue-500" />
+                        {scheduleType === 'recurring' ? 'First Scheduled Dispatch Date & Time' : 'Select Dispatch Date & Time'}
+                      </span>
+                      <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-mono">
+                        Timezone: {typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : 'Local'}
+                      </span>
+                    </div>
+
+                    {/* Quick Presets */}
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const d = new Date(Date.now() + 15 * 60 * 1000);
+                          const pad = (n: number) => String(n).padStart(2, '0');
+                          setScheduledDateTime(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
+                          setScheduleError('');
+                        }}
+                        className="rounded-lg border border-blue-500/30 bg-white dark:bg-zinc-900 px-3 py-1.5 text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 transition-colors shadow-xs"
+                      >
+                        ⏱ In 15 Mins
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPresetTime(1)}
+                        className="rounded-lg border border-blue-500/30 bg-white dark:bg-zinc-900 px-3 py-1.5 text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 transition-colors shadow-xs"
+                      >
+                        ⏱ In 1 Hour
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPresetTime(24, 9)}
+                        className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1.5 text-[11px] font-bold text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors shadow-xs"
+                      >
+                        ☀️ Tomorrow 9:00 AM
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPresetTime(24, 18)}
+                        className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1.5 text-[11px] font-bold text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors shadow-xs"
+                      >
+                        🌙 Tomorrow 6:00 PM
+                      </button>
+                    </div>
+
+                    <div>
+                      <input
+                        type="datetime-local"
+                        min={getMinDateTimeString()}
+                        value={scheduledDateTime}
+                        onChange={(e) => {
+                          setScheduledDateTime(e.target.value);
+                          setScheduleError('');
+                        }}
+                        className="w-full sm:w-auto rounded-xl border border-zinc-300 bg-white px-3.5 py-2 text-xs font-semibold text-zinc-900 shadow-sm focus:border-blue-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
+                      />
+                    </div>
+
+                    {/* Guarantee Every Mail Sends Checkbox */}
+                    <div className="pt-2 border-t border-blue-500/20">
+                      <label className="flex items-start gap-2.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={autoRetryFailed}
+                          onChange={(e) => setAutoRetryFailed(e.target.checked)}
+                          className="mt-0.5 rounded border-zinc-300 text-blue-600 focus:ring-blue-500 dark:border-zinc-700"
+                        />
+                        <div>
+                          <span className="text-xs font-bold text-zinc-900 dark:text-white flex items-center gap-1">
+                            <ShieldCheck className="h-4 w-4 text-emerald-500" />
+                            Guarantee Every Mail Sends Every Time
+                          </span>
+                          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                            Ensures 100% of contact recipients receive the email on every scheduled run. Automatically triggers multi-sender pool failover and instant retry if an outbound connection fails.
+                          </p>
+                        </div>
+                      </label>
+                    </div>
+
+                    {scheduleError && (
+                      <p className="text-xs font-bold text-rose-500 flex items-center gap-1">
+                        <AlertCircle className="h-4 w-4 shrink-0" /> {scheduleError}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
+
+              {/* Status Summary Banner */}
+              {deliveryMode === 'now' ? (
+                <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4 space-y-2">
+                  <h4 className="text-xs font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-2">
+                    <Sparkles className="h-4 w-4" /> Ready for Immediate Launch
+                  </h4>
+                  <p className="text-xs text-zinc-600 dark:text-zinc-300">
+                    Target List: <strong>{listCount} Recipient Emails</strong>. Each email will be sent via your verified Gmail SMTP provider with rate limiting and live monitoring.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-blue-500/30 bg-blue-500/10 p-4 space-y-2">
+                  <h4 className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-2">
+                    <Calendar className="h-4 w-4" /> Ready for Automated Scheduled Dispatch
+                  </h4>
+                  <p className="text-xs text-zinc-600 dark:text-zinc-300">
+                    Target List: <strong>{listCount} Recipient Emails</strong>.
+                    {scheduledDateTime ? (
+                      <> This campaign will automatically begin sending on <strong>{new Date(scheduledDateTime).toLocaleString()}</strong>.</>
+                    ) : (
+                      <> Please select a schedule date and time above.</>
+                    )}
+                  </p>
+                </div>
+              )}
 
               <div className="flex flex-col sm:flex-row justify-between gap-3 pt-4">
                 <button
@@ -543,10 +837,23 @@ export default function NewCampaignWizard() {
                   type="button"
                   disabled={isSubmitting}
                   onClick={handleLaunchCampaign}
-                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-500/30 hover:scale-[1.02] disabled:opacity-50"
+                  className={`w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl px-6 py-3 text-sm font-bold text-white shadow-lg transition-all hover:scale-[1.02] disabled:opacity-50 cursor-pointer ${
+                    deliveryMode === 'scheduled'
+                      ? 'bg-gradient-to-r from-blue-600 to-indigo-600 shadow-blue-500/30'
+                      : 'bg-gradient-to-r from-emerald-600 to-teal-600 shadow-emerald-500/30'
+                  }`}
                 >
-                  <Send className="h-4 w-4" />
-                  <span>{isSubmitting ? 'Launching Campaign...' : `Start Sending to ${listCount} Recipients Now`}</span>
+                  {deliveryMode === 'scheduled' ? (
+                    <>
+                      <Calendar className="h-4 w-4" />
+                      <span>{isSubmitting ? 'Scheduling Campaign...' : `Schedule Campaign (${listCount} Recipients)`}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="h-4 w-4" />
+                      <span>{isSubmitting ? 'Launching Campaign...' : `Start Sending to ${listCount} Recipients Now`}</span>
+                    </>
+                  )}
                 </button>
               </div>
             </GlassCard>

@@ -7,8 +7,8 @@ import { Navbar } from '@/components/layout/Navbar';
 import { GlassCard } from '@/components/ui/GlassCard';
 import { Badge } from '@/components/ui/Badge';
 import { formatDate, calculatePercentage } from '@/lib/utils';
-import { Campaign, EmailLog } from '@/types';
-import { Plus, BarChart2, Play, AlertCircle, RefreshCw, Layers, ChevronDown, ChevronUp, Users, Building2, Trash2 } from 'lucide-react';
+import { Campaign, EmailLog, ScheduleType, RecurrencePattern } from '@/types';
+import { Plus, BarChart2, Play, AlertCircle, RefreshCw, Layers, ChevronDown, ChevronUp, Users, Building2, Trash2, Send, Clock, Calendar, Repeat, Edit3, X } from 'lucide-react';
 
 export default function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -17,6 +17,82 @@ export default function CampaignsPage() {
   const [expandedCampaignId, setExpandedCampaignId] = useState<string | null>(null);
   const [campaignLogs, setCampaignLogs] = useState<Record<string, EmailLog[]>>({});
   const [loadingLogs, setLoadingLogs] = useState<Record<string, boolean>>({});
+
+  // Reschedule modal state
+  const [rescheduleTarget, setRescheduleTarget] = useState<Campaign | null>(null);
+  const [editDate, setEditDate] = useState<string>('');
+  const [editType, setEditType] = useState<ScheduleType>('once');
+  const [editPattern, setEditPattern] = useState<RecurrencePattern>('daily');
+  const [editIntervalHours, setEditIntervalHours] = useState<number>(24);
+  const [modalSaving, setModalSaving] = useState(false);
+  const [modalError, setModalError] = useState<string>('');
+
+  const handleOpenRescheduleModal = (c: Campaign) => {
+    setRescheduleTarget(c);
+    const target = c.next_run_at || c.scheduled_at || new Date(Date.now() + 3600 * 1000).toISOString();
+    const d = new Date(target);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    setEditDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
+    setEditType(c.schedule_type || 'once');
+    setEditPattern(c.recurrence_pattern || 'daily');
+    setEditIntervalHours(c.recurrence_interval_hours || 24);
+    setModalError('');
+  };
+
+  const handleSaveReschedule = async () => {
+    if (!rescheduleTarget || !editDate) return;
+    setModalSaving(true);
+    try {
+      const scheduledIso = new Date(editDate).toISOString();
+      const res = await fetch(`/api/campaigns/${rescheduleTarget.id}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'reschedule',
+          scheduled_at: scheduledIso,
+          schedule_type: editType,
+          recurrence_pattern: editType === 'recurring' ? editPattern : undefined,
+          recurrence_interval_hours: editIntervalHours,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to reschedule');
+      }
+      setRescheduleTarget(null);
+      loadCampaigns();
+    } catch (err: any) {
+      setModalError(err.message || 'Reschedule failed');
+    } finally {
+      setModalSaving(false);
+    }
+  };
+
+  const handleSendNow = async (id: string) => {
+    try {
+      await fetch(`/api/campaigns/${id}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'send_now' }),
+      });
+      loadCampaigns();
+    } catch (err) {
+      console.error('Send now failed:', err);
+    }
+  };
+
+  const handleCancelSchedule = async (id: string) => {
+    try {
+      await fetch(`/api/campaigns/${id}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cancel_schedule' }),
+      });
+      loadCampaigns();
+    } catch (err) {
+      console.error('Cancel schedule failed:', err);
+    }
+  };
 
   const handleDeleteCampaign = async (id: string, name: string) => {
     if (!confirm(`Are you sure you want to remove "${name}" from your campaign history?`)) {
@@ -125,6 +201,9 @@ export default function CampaignsPage() {
 
     const query = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
     try {
+      // Trigger sweep for any due scheduled campaigns so they fire seamlessly
+      fetch('/api/cron/scheduled').catch(() => {});
+
       const res = await fetch(`/api/campaigns${query}`);
       const data = await res.json();
       const serverList: Campaign[] = data.campaigns || [];
@@ -292,10 +371,28 @@ export default function CampaignsPage() {
                           {c.status === 'sending' && <Badge variant="blue" dot>Sending</Badge>}
                           {c.status === 'paused' && <Badge variant="amber">Paused</Badge>}
                           {c.status === 'draft' && <Badge variant="zinc">Draft</Badge>}
+                          {c.status === 'scheduled' && (
+                            <>
+                              <Badge variant="blue" dot>
+                                📅 Scheduled: {c.scheduled_at ? new Date(c.scheduled_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Pending'}
+                              </Badge>
+                              {c.schedule_type === 'recurring' && (
+                                <Badge variant="purple">
+                                  <Repeat className="h-3 w-3 mr-1 inline" />
+                                  {c.recurrence_pattern ? `Repeats ${c.recurrence_pattern}` : 'Recurring'}
+                                </Badge>
+                              )}
+                            </>
+                          )}
                           <Badge variant="purple">{c.speed_preset.replace('_', ' ')} speed</Badge>
                         </div>
                         <p className="text-xs text-zinc-500 dark:text-zinc-400">
                           Subject: &quot;{c.subject}&quot; • Created {formatDate(c.created_at)}
+                          {c.status === 'scheduled' && c.scheduled_at && (
+                            <span className="ml-2 font-semibold text-blue-600 dark:text-blue-400">
+                              (Will send {new Date(c.scheduled_at) > new Date() ? `in ${Math.round((new Date(c.scheduled_at).getTime() - Date.now()) / (60 * 1000))} min` : 'soon'})
+                            </span>
+                          )}
                         </p>
                       </div>
 
@@ -323,7 +420,34 @@ export default function CampaignsPage() {
                             {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                           </button>
 
-                          {c.status === 'sending' ? (
+                          {c.status === 'scheduled' ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleSendNow(c.id)}
+                                className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-3.5 py-2 text-xs font-bold text-white shadow-md hover:scale-[1.02] transition-transform cursor-pointer"
+                                title="Send this scheduled campaign right now"
+                              >
+                                <Send className="h-3.5 w-3.5" /> Send Now
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenRescheduleModal(c)}
+                                className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-xs font-bold text-zinc-700 shadow-sm hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800 transition-all cursor-pointer"
+                                title="Change scheduled time or recurrence"
+                              >
+                                <Edit3 className="h-3.5 w-3.5 text-blue-500" /> Reschedule
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleCancelSchedule(c.id)}
+                                className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-600 hover:bg-rose-500/20 dark:text-rose-400 transition-all cursor-pointer"
+                                title="Cancel scheduled dispatch and save as draft"
+                              >
+                                <Clock className="h-3.5 w-3.5" /> Cancel Schedule
+                              </button>
+                            </>
+                          ) : c.status === 'sending' ? (
                             <Link
                               href={`/campaigns/${c.id}/progress`}
                               className="flex items-center gap-1.5 rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-bold text-white shadow-md hover:bg-blue-700"
@@ -424,6 +548,128 @@ export default function CampaignsPage() {
               })
             )}
           </div>
+
+          {/* Quick Reschedule Modal Dialog */}
+          {rescheduleTarget && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/70 backdrop-blur-xs p-4">
+              <div className="w-full max-w-lg rounded-2xl border border-zinc-200 bg-white p-5 sm:p-6 dark:border-zinc-800 dark:bg-zinc-900 shadow-2xl space-y-4">
+                <div className="flex items-center justify-between border-b border-zinc-100 dark:border-zinc-800 pb-3">
+                  <h3 className="text-base font-bold text-zinc-900 dark:text-white flex items-center gap-2">
+                    <Clock className="h-5 w-5 text-blue-500" />
+                    <span>Reschedule: {rescheduleTarget.name}</span>
+                  </h3>
+                  <button
+                    onClick={() => setRescheduleTarget(null)}
+                    className="p-1 rounded-lg text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                {/* Schedule Type Selection: Once vs Recurring */}
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-zinc-700 dark:text-zinc-300">
+                    Schedule Type
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditType('once')}
+                      className={`flex items-center justify-center gap-1.5 p-3 rounded-xl border text-xs font-bold transition-all ${
+                        editType === 'once'
+                          ? 'border-blue-600 bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400'
+                          : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-400'
+                      }`}
+                    >
+                      <Clock className="h-3.5 w-3.5" /> One-Time Dispatch
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditType('recurring')}
+                      className={`flex items-center justify-center gap-1.5 p-3 rounded-xl border text-xs font-bold transition-all ${
+                        editType === 'recurring'
+                          ? 'border-blue-600 bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400'
+                          : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-400'
+                      }`}
+                    >
+                      <Repeat className="h-3.5 w-3.5" /> Automated Recurring
+                    </button>
+                  </div>
+                </div>
+
+                {/* Recurring Frequency Patterns */}
+                {editType === 'recurring' && (
+                  <div className="space-y-2 rounded-xl bg-blue-50/50 dark:bg-blue-500/5 p-3 border border-blue-500/20">
+                    <label className="block text-xs font-bold text-zinc-700 dark:text-zinc-300">
+                      Recurrence Frequency
+                    </label>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {[
+                        { key: 'daily', label: 'Every Day' },
+                        { key: 'weekdays', label: 'Weekdays (Mon-Fri)' },
+                        { key: 'weekly', label: 'Every Week' },
+                        { key: 'monthly', label: 'Every Month' },
+                        { key: 'hourly', label: 'Every Hour' },
+                      ].map((item) => (
+                        <button
+                          key={item.key}
+                          type="button"
+                          onClick={() => setEditPattern(item.key as RecurrencePattern)}
+                          className={`p-2 rounded-lg border text-xs font-semibold text-center transition-all ${
+                            editPattern === item.key
+                              ? 'border-blue-600 bg-blue-600 text-white'
+                              : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300'
+                          }`}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Date & Time Picker */}
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-zinc-700 dark:text-zinc-300">
+                    {editType === 'recurring' ? 'Next Scheduled Run Date & Time' : 'Scheduled Date & Time'}
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={editDate}
+                    onChange={(e) => {
+                      setEditDate(e.target.value);
+                      setModalError('');
+                    }}
+                    className="w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-zinc-900 dark:border-zinc-800 dark:bg-zinc-950 dark:text-white"
+                  />
+                </div>
+
+                {modalError && (
+                  <p className="text-xs font-bold text-rose-500 flex items-center gap-1">
+                    <AlertCircle className="h-4 w-4" /> {modalError}
+                  </p>
+                )}
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-zinc-100 dark:border-zinc-800">
+                  <button
+                    type="button"
+                    onClick={() => setRescheduleTarget(null)}
+                    className="rounded-xl border border-zinc-200 px-4 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:text-zinc-300 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={modalSaving}
+                    onClick={handleSaveReschedule}
+                    className="rounded-xl bg-blue-600 px-5 py-2 text-xs font-bold text-white shadow-md hover:bg-blue-700 disabled:opacity-50 cursor-pointer"
+                  >
+                    {modalSaving ? 'Saving...' : 'Save & Reschedule'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </main>
       </div>
     </div>

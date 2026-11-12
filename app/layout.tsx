@@ -1,13 +1,6 @@
 import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
 import './globals.css';
-
-const inter = Inter({
-  subsets: ['latin'],
-  display: 'swap',
-  variable: '--font-inter',
-  weight: ['300', '400', '500', '600', '700'],
-});
+import { SchedulerHeartbeat } from '@/components/layout/SchedulerHeartbeat';
 
 export const metadata: Metadata = {
   title: 'Automailer | Multi-Sender Bulk Email Outreach Platform',
@@ -56,8 +49,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`dark ${inter.variable}`} suppressHydrationWarning>
-      <body className={`${inter.className} bg-zinc-950 text-zinc-100 font-sans antialiased selection:bg-blue-500 selection:text-white`} suppressHydrationWarning>
+    <html lang="en" className="dark" suppressHydrationWarning>
+      <body className="bg-zinc-950 text-zinc-100 font-sans antialiased selection:bg-blue-500 selection:text-white" suppressHydrationWarning>
+        <SchedulerHeartbeat />
         {children}
       </body>
     </html>

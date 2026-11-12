@@ -65,13 +65,21 @@ export async function POST(req: Request) {
       speed_preset,
       emails_per_minute,
       scheduled_at,
+      schedule_type,
+      recurrence_pattern,
+      recurrence_interval_hours,
+      auto_retry_failed,
     } = body;
 
     if (!name || !subject || !sender_name || !reply_to || !body_html || !list_id) {
       return NextResponse.json({ error: 'Missing required campaign fields' }, { status: 400 });
     }
 
-    let contacts = localStore.getContacts(list_id);
+    let contacts = localStore.getContacts(user_email, list_id);
+    if (contacts.length === 0) {
+      contacts = localStore.getContacts(list_id);
+    }
+
     if (contacts.length === 0 && isSupabaseConfigured() && list_id) {
       try {
         const { getContactsByListId, getContactsByUser } = await import('@/lib/supabase/db');
@@ -97,6 +105,7 @@ export async function POST(req: Request) {
       }, { status: 400 });
     }
 
+    const isScheduled = Boolean(scheduled_at);
     const newCampaign = localStore.addCampaign({
       name,
       user_email: user_email || '',
@@ -107,10 +116,15 @@ export async function POST(req: Request) {
       template_id,
       list_id,
       body_html,
-      status: scheduled_at ? 'scheduled' : 'draft',
+      status: isScheduled ? 'scheduled' : 'draft',
       speed_preset: speed_preset || 'medium',
       emails_per_minute: emails_per_minute || 50,
       scheduled_at: scheduled_at || undefined,
+      schedule_type: schedule_type || (isScheduled ? 'once' : undefined),
+      recurrence_pattern: recurrence_pattern || undefined,
+      recurrence_interval_hours: recurrence_interval_hours ? Number(recurrence_interval_hours) : undefined,
+      next_run_at: scheduled_at || undefined,
+      auto_retry_failed: auto_retry_failed !== false,
       total_recipients: contacts.length,
     });
 

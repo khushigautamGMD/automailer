@@ -1,9 +1,13 @@
 import { localStore } from '@/lib/storage';
+import { ensureCampaignRunnerActive } from '@/lib/queue/campaign-runner';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+
+  // Auto-revive runner if campaign is marked sending but runner was disconnected
+  ensureCampaignRunnerActive(id);
 
   const encoder = new TextEncoder();
 

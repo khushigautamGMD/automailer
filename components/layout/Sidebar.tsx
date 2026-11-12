@@ -16,11 +16,13 @@ import {
   X,
   ShieldCheck,
   LogOut,
+  CalendarClock,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'Campaigns', href: '/campaigns', icon: Send },
+  { name: 'Scheduled Mails', href: '/schedule', icon: CalendarClock },
   { name: 'Contacts & CSV', href: '/contacts', icon: Users },
   { name: 'Templates', href: '/templates', icon: FileCode },
   { name: 'Settings & SMTP', href: '/settings', icon: Settings },

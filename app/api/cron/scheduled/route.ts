@@ -1,0 +1,38 @@
+import { NextResponse } from 'next/server';
+import { checkAndExecuteScheduledCampaigns } from '@/lib/queue/campaign-runner';
+import { localStore } from '@/lib/storage';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET() {
+  try {
+    const triggeredIds = await checkAndExecuteScheduledCampaigns();
+    const scheduled = localStore.getAllScheduledCampaigns();
+
+    return NextResponse.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      triggeredCount: triggeredIds.length,
+      triggeredCampaignIds: triggeredIds,
+      totalScheduled: scheduled.length,
+      upcomingSchedules: scheduled.map((c) => ({
+        id: c.id,
+        name: c.name,
+        scheduled_at: c.scheduled_at,
+        next_run_at: c.next_run_at || c.scheduled_at,
+        schedule_type: c.schedule_type || 'once',
+        recurrence_pattern: c.recurrence_pattern,
+        total_recipients: c.total_recipients,
+      })),
+    });
+  } catch (err: any) {
+    return NextResponse.json(
+      { success: false, error: err?.message || 'Failed to check scheduled campaigns' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST() {
+  return GET();
+}

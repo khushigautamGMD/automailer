@@ -40,6 +40,9 @@ export default function DashboardPage() {
     }
     const settingsUrl = '/api/settings' + (userEmail ? `?email=${encodeURIComponent(userEmail)}` : '');
 
+    // Sweep due scheduled campaigns
+    fetch('/api/cron/scheduled').catch(() => {});
+
     Promise.all([
       fetch('/api/campaigns').then((res) => res.json()),
       fetch(settingsUrl).then((res) => res.json()),

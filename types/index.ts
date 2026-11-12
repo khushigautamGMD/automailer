@@ -2,6 +2,8 @@ export type ContactStatus = 'active' | 'unsubscribed' | 'bounced';
 export type CampaignStatus = 'draft' | 'scheduled' | 'sending' | 'paused' | 'completed' | 'cancelled';
 export type SpeedPreset = 'very_slow' | 'slow' | 'medium' | 'fast' | 'custom';
 export type LogStatus = 'pending' | 'sending' | 'sent' | 'failed' | 'bounced' | 'opened' | 'clicked';
+export type ScheduleType = 'once' | 'recurring';
+export type RecurrencePattern = 'hourly' | 'daily' | 'weekdays' | 'weekly' | 'monthly' | 'custom_hours';
 
 export interface SmtpAccount {
   id: string;
@@ -90,6 +92,13 @@ export interface Campaign {
   speed_preset: SpeedPreset;
   emails_per_minute: number;
   scheduled_at?: string;
+  schedule_type?: ScheduleType;
+  recurrence_pattern?: RecurrencePattern;
+  recurrence_interval_hours?: number;
+  last_executed_at?: string;
+  next_run_at?: string;
+  execution_count?: number;
+  auto_retry_failed?: boolean;
   total_recipients: number;
   sent_count: number;
   failed_count: number;

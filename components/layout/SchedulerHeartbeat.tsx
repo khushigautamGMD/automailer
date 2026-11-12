@@ -10,7 +10,14 @@ export function SchedulerHeartbeat() {
   useEffect(() => {
     const sweep = async () => {
       try {
-        const res = await fetch('/api/cron/scheduled');
+        let userEmail = '';
+        try {
+          const u = localStorage.getItem('automailer_user');
+          if (u) userEmail = JSON.parse(u).email || '';
+        } catch {}
+
+        const query = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
+        const res = await fetch(`/api/cron/scheduled${query}`);
         if (res.ok) {
           const data = await res.json();
           if (data && data.triggeredCount > 0) {

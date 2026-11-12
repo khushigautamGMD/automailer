@@ -15,7 +15,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const body = await req.json();
     const { action } = body; // 'start' | 'pause' | 'resume' | 'cancel'
 
-    const campaign = localStore.getCampaign(id);
+    let campaign = localStore.getCampaign(id);
+    if (!campaign && isSupabaseConfigured()) {
+      try {
+        const { getCampaignByIdFromDb } = await import('@/lib/supabase/db');
+        const dbCamp = await getCampaignByIdFromDb(id);
+        if (dbCamp) {
+          campaign = dbCamp;
+        }
+      } catch (err) {}
+    }
     if (!campaign) {
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 });
     }
@@ -65,6 +74,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
       // Trigger execution in non-blocking background task
       startCampaignExecution(id);
+
+      // Sync state back to DB
+      if (campaign.user_email) {
+        const { isSupabaseConfigured } = await import('@/lib/supabase/client');
+        if (isSupabaseConfigured()) {
+          try {
+            const { getCampaignsByUser, saveCampaignsToDb } = await import('@/lib/supabase/db');
+            await saveCampaignsToDb(campaign.user_email, localStore.getCampaigns(campaign.user_email));
+          } catch {}
+        }
+      }
+
       return NextResponse.json({ message: 'Campaign sending started', campaign: localStore.getCampaign(id) });
     } else if (action === 'cancel_schedule') {
       localStore.updateCampaign(id, {
@@ -73,6 +94,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         next_run_at: undefined,
         schedule_type: undefined,
       });
+
+      if (campaign.user_email) {
+        const { isSupabaseConfigured } = await import('@/lib/supabase/client');
+        if (isSupabaseConfigured()) {
+          try {
+            const { saveCampaignsToDb } = await import('@/lib/supabase/db');
+            await saveCampaignsToDb(campaign.user_email, localStore.getCampaigns(campaign.user_email));
+          } catch {}
+        }
+      }
+
       return NextResponse.json({ message: 'Campaign schedule cancelled', campaign: localStore.getCampaign(id) });
     } else if (action === 'pause_schedule') {
       localStore.updateCampaign(id, { status: 'paused' });
@@ -100,6 +132,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         recurrence_pattern: recurrence_pattern || undefined,
         recurrence_interval_hours: recurrence_interval_hours ? Number(recurrence_interval_hours) : undefined,
       });
+
+      if (campaign.user_email) {
+        const { isSupabaseConfigured } = await import('@/lib/supabase/client');
+        if (isSupabaseConfigured()) {
+          try {
+            const { saveCampaignsToDb } = await import('@/lib/supabase/db');
+            await saveCampaignsToDb(campaign.user_email, localStore.getCampaigns(campaign.user_email));
+          } catch {}
+        }
+      }
+
       return NextResponse.json({ message: 'Campaign rescheduled successfully', campaign: localStore.getCampaign(id) });
     } else if (action === 'pause') {
       pauseCampaignExecution(id);

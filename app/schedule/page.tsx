@@ -62,8 +62,8 @@ export default function SchedulePage() {
 
     const query = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
     try {
-      // Trigger scheduler sweep
-      fetch('/api/cron/scheduled').catch(() => {});
+      // Trigger scheduler sweep with user context
+      await fetch(`/api/cron/scheduled${query}`).catch(() => {});
 
       const res = await fetch(`/api/campaigns${query}`);
       const data = await res.json();

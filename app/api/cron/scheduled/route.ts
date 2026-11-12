@@ -4,8 +4,26 @@ import { localStore } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
+    const { searchParams } = new URL(req.url);
+    const email = searchParams.get('email');
+
+    if (email) {
+      const { isSupabaseConfigured } = await import('@/lib/supabase/client');
+      if (isSupabaseConfigured()) {
+        try {
+          const { getCampaignsByUser } = await import('@/lib/supabase/db');
+          const userCamps = await getCampaignsByUser(email);
+          if (userCamps.length > 0) {
+            localStore.syncUserCampaigns(email, userCamps);
+          }
+        } catch (syncErr) {
+          console.error('[Cron] Error syncing user campaigns:', syncErr);
+        }
+      }
+    }
+
     const triggeredIds = await checkAndExecuteScheduledCampaigns();
     const scheduled = localStore.getAllScheduledCampaigns();
 
@@ -33,6 +51,6 @@ export async function GET() {
   }
 }
 
-export async function POST() {
-  return GET();
+export async function POST(req: Request) {
+  return GET(req);
 }

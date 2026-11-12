@@ -542,6 +542,13 @@ export async function saveCampaignsToDb(userEmail: string, campaigns: Campaign[]
       bounced_count: c.bounced_count || 0,
       unsubscribed_count: c.unsubscribed_count || 0,
       scheduled_at: c.scheduled_at,
+      schedule_type: c.schedule_type,
+      recurrence_pattern: c.recurrence_pattern,
+      recurrence_interval_hours: c.recurrence_interval_hours,
+      next_run_at: c.next_run_at,
+      last_executed_at: c.last_executed_at,
+      execution_count: c.execution_count,
+      auto_retry_failed: c.auto_retry_failed,
       created_at: c.created_at,
     }));
 
@@ -552,4 +559,70 @@ export async function saveCampaignsToDb(userEmail: string, campaigns: Campaign[]
   } catch (err) {
     console.error('Error saving campaigns to DB:', err);
   }
+}
+
+export async function getAllScheduledCampaignsFromDb(): Promise<Campaign[]> {
+  if (!isSupabaseConfigured()) return [];
+
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('email, email_signature');
+
+    if (error || !Array.isArray(data)) return [];
+
+    const allScheduled: Campaign[] = [];
+    for (const row of data) {
+      if (row.email && row.email_signature) {
+        try {
+          const parsed = JSON.parse(row.email_signature);
+          const list: Campaign[] = Array.isArray(parsed) ? parsed : (parsed?.campaigns || []);
+          if (Array.isArray(list) && list.length > 0) {
+            // Sync into memory store
+            const { localStore } = await import('@/lib/storage');
+            localStore.syncUserCampaigns(row.email, list);
+            for (const c of list) {
+              if (c && c.status === 'scheduled') {
+                allScheduled.push(c);
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+    return allScheduled;
+  } catch (err) {
+    console.error('Failed to sync scheduled campaigns from DB:', err);
+    return [];
+  }
+}
+
+export async function getCampaignByIdFromDb(id: string): Promise<Campaign | null> {
+  if (!id || !isSupabaseConfigured()) return null;
+
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('email, email_signature');
+
+    if (error || !Array.isArray(data)) return null;
+
+    for (const row of data) {
+      if (row.email && row.email_signature) {
+        try {
+          const parsed = JSON.parse(row.email_signature);
+          const list: Campaign[] = Array.isArray(parsed) ? parsed : (parsed?.campaigns || []);
+          const match = list.find((c) => c && c.id === id);
+          if (match) {
+            const { localStore } = await import('@/lib/storage');
+            localStore.syncUserCampaigns(row.email, list);
+            return match;
+          }
+        } catch {}
+      }
+    }
+  } catch (err) {
+    console.error(`Failed to find campaign ${id} in DB:`, err);
+  }
+  return null;
 }

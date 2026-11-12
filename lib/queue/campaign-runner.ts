@@ -97,7 +97,19 @@ export async function startCampaignExecution(campaignId: string) {
     return; // Already running
   }
 
-  const campaign = localStore.getCampaign(campaignId);
+  let campaign = localStore.getCampaign(campaignId);
+  if (!campaign && isSupabaseConfigured()) {
+    try {
+      const { getCampaignByIdFromDb } = await import('@/lib/supabase/db');
+      const dbCamp = await getCampaignByIdFromDb(campaignId);
+      if (dbCamp) {
+        campaign = dbCamp;
+      }
+    } catch (err) {
+      console.error(`Failed to load campaign ${campaignId} from DB in runner:`, err);
+    }
+  }
+
   if (!campaign) throw new Error('Campaign not found');
 
   if (campaign.status === 'completed' || campaign.status === 'cancelled') {
@@ -118,6 +130,14 @@ export async function startCampaignExecution(campaignId: string) {
   // Set status to sending
   localStore.updateCampaign(campaignId, { status: 'sending' });
   activeRunners[campaignId] = true;
+
+  if (campaign.user_email && isSupabaseConfigured()) {
+    try {
+      const { saveCampaignsToDb } = await import('@/lib/supabase/db');
+      const userCampaigns = localStore.getCampaigns(campaign.user_email);
+      await saveCampaignsToDb(campaign.user_email, userCampaigns);
+    } catch {}
+  }
 
   // Run execution loop in background
   executeQueueLoop(campaignId);
@@ -181,6 +201,15 @@ export function ensureCampaignRunnerActive(campaignId: string) {
 export async function checkAndExecuteScheduledCampaigns(): Promise<string[]> {
   const triggeredIds: string[] = [];
   try {
+    if (isSupabaseConfigured()) {
+      try {
+        const { getAllScheduledCampaignsFromDb } = await import('@/lib/supabase/db');
+        await getAllScheduledCampaignsFromDb();
+      } catch (err) {
+        console.error('[Scheduler] Failed to sync scheduled campaigns from DB:', err);
+      }
+    }
+
     const allScheduled = localStore.getAllScheduledCampaigns();
     const now = Date.now();
 
@@ -276,6 +305,15 @@ initBackgroundScheduler();
 async function executeQueueLoop(campaignId: string) {
   try {
     let campaign = localStore.getCampaign(campaignId);
+    if (!campaign && isSupabaseConfigured()) {
+      try {
+        const { getCampaignByIdFromDb } = await import('@/lib/supabase/db');
+        const dbCamp = await getCampaignByIdFromDb(campaignId);
+        if (dbCamp) {
+          campaign = dbCamp;
+        }
+      } catch {}
+    }
     if (!campaign) return;
 
     // Contact resolution: check user-specific contacts, then global contacts

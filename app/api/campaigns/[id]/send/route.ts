@@ -1,19 +1,44 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, after } from 'next/server';
 import {
   startCampaignExecution,
   pauseCampaignExecution,
   resumeCampaignExecution,
   cancelCampaignExecution,
   retryCampaignExecution,
+  computeNextRunTime,
 } from '@/lib/queue/campaign-runner';
 import { localStore } from '@/lib/storage';
 import { canSendMoreEmails } from '@/lib/plan-limits';
+import { isSupabaseConfigured } from '@/lib/supabase/client';
+
+export const maxDuration = 60;
+
+function scheduleLoopInBackground(loopPromises: Promise<void>[]) {
+  if (loopPromises.length === 0) return;
+  try {
+    after(async () => {
+      await Promise.allSettled(loopPromises);
+    });
+  } catch {
+    // Outside Next.js request context
+  }
+}
+
+async function syncCampaignToDb(userEmail?: string) {
+  if (!userEmail || !isSupabaseConfigured()) return;
+  try {
+    const { saveCampaignsToDb } = await import('@/lib/supabase/db');
+    await saveCampaignsToDb(userEmail, localStore.getCampaigns(userEmail));
+  } catch (err) {
+    console.error('Failed to sync campaign state to DB:', err);
+  }
+}
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const body = await req.json();
-    const { action } = body; // 'start' | 'pause' | 'resume' | 'cancel'
+    const { action } = body;
 
     let campaign = localStore.getCampaign(id);
     if (!campaign && isSupabaseConfigured()) {
@@ -23,15 +48,23 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         if (dbCamp) {
           campaign = dbCamp;
         }
-      } catch (err) {}
+      } catch {}
     }
     if (!campaign) {
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 });
     }
 
+    const loopPromises: Promise<void>[] = [];
+    const onLoop = (p: Promise<void>) => {
+      loopPromises.push(p);
+    };
+
     if (action === 'start' || action === 'send_now') {
       const profile = localStore.getProfile(campaign.user_email);
-      const hasOwnSmtp = Boolean((profile.smtp_user && profile.smtp_pass) || (profile.smtp_accounts && profile.smtp_accounts.length > 0));
+      const hasOwnSmtp = Boolean(
+        (profile.smtp_user && profile.smtp_pass) ||
+          (profile.smtp_accounts && profile.smtp_accounts.some((a) => a.active && a.user && a.pass))
+      );
 
       if (!hasOwnSmtp) {
         const quotaCheck = canSendMoreEmails(profile, 1);
@@ -40,10 +73,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         }
       }
 
-      // If scheduled campaign is being fired now, advance next schedule if recurring
       if (campaign.status === 'scheduled') {
         if (campaign.schedule_type === 'recurring' && campaign.recurrence_pattern) {
-          const { computeNextRunTime } = await import('@/lib/queue/campaign-runner');
           const next = computeNextRunTime(
             new Date(),
             campaign.recurrence_pattern,
@@ -56,6 +87,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
             last_executed_at: new Date().toISOString(),
             sent_count: 0,
             failed_count: 0,
+            sent_recipients: [],
+            failed_recipients: [],
+            schedule_note: undefined,
           });
         } else {
           localStore.updateCampaign(id, {
@@ -65,26 +99,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
             last_executed_at: new Date().toISOString(),
             sent_count: 0,
             failed_count: 0,
+            sent_recipients: [],
+            failed_recipients: [],
+            schedule_note: undefined,
           });
         }
       }
 
-      // Reset previous logs to ensure every single email in the list sends
       localStore.resetCampaignLogsForRerun(id);
-
-      // Trigger execution in non-blocking background task
-      startCampaignExecution(id);
-
-      // Sync state back to DB
-      if (campaign.user_email) {
-        const { isSupabaseConfigured } = await import('@/lib/supabase/client');
-        if (isSupabaseConfigured()) {
-          try {
-            const { getCampaignsByUser, saveCampaignsToDb } = await import('@/lib/supabase/db');
-            await saveCampaignsToDb(campaign.user_email, localStore.getCampaigns(campaign.user_email));
-          } catch {}
-        }
-      }
+      await startCampaignExecution(id, onLoop);
+      scheduleLoopInBackground(loopPromises);
+      await syncCampaignToDb(campaign.user_email);
 
       return NextResponse.json({ message: 'Campaign sending started', campaign: localStore.getCampaign(id) });
     } else if (action === 'cancel_schedule') {
@@ -93,24 +118,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         scheduled_at: undefined,
         next_run_at: undefined,
         schedule_type: undefined,
+        schedule_note: undefined,
       });
-
-      if (campaign.user_email) {
-        const { isSupabaseConfigured } = await import('@/lib/supabase/client');
-        if (isSupabaseConfigured()) {
-          try {
-            const { saveCampaignsToDb } = await import('@/lib/supabase/db');
-            await saveCampaignsToDb(campaign.user_email, localStore.getCampaigns(campaign.user_email));
-          } catch {}
-        }
-      }
+      await syncCampaignToDb(campaign.user_email);
 
       return NextResponse.json({ message: 'Campaign schedule cancelled', campaign: localStore.getCampaign(id) });
     } else if (action === 'pause_schedule') {
       localStore.updateCampaign(id, { status: 'paused' });
+      await syncCampaignToDb(campaign.user_email);
       return NextResponse.json({ message: 'Campaign schedule paused', campaign: localStore.getCampaign(id) });
     } else if (action === 'resume_schedule') {
-      localStore.updateCampaign(id, { status: 'scheduled' });
+      localStore.updateCampaign(id, { status: 'scheduled', schedule_note: undefined });
+      await syncCampaignToDb(campaign.user_email);
       return NextResponse.json({ message: 'Campaign schedule resumed', campaign: localStore.getCampaign(id) });
     } else if (action === 'reschedule') {
       const {
@@ -131,30 +150,28 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         schedule_type: schedule_type || 'once',
         recurrence_pattern: recurrence_pattern || undefined,
         recurrence_interval_hours: recurrence_interval_hours ? Number(recurrence_interval_hours) : undefined,
+        schedule_note: undefined,
       });
-
-      if (campaign.user_email) {
-        const { isSupabaseConfigured } = await import('@/lib/supabase/client');
-        if (isSupabaseConfigured()) {
-          try {
-            const { saveCampaignsToDb } = await import('@/lib/supabase/db');
-            await saveCampaignsToDb(campaign.user_email, localStore.getCampaigns(campaign.user_email));
-          } catch {}
-        }
-      }
+      await syncCampaignToDb(campaign.user_email);
 
       return NextResponse.json({ message: 'Campaign rescheduled successfully', campaign: localStore.getCampaign(id) });
     } else if (action === 'pause') {
       pauseCampaignExecution(id);
+      await syncCampaignToDb(campaign.user_email);
       return NextResponse.json({ message: 'Campaign paused', campaign: localStore.getCampaign(id) });
     } else if (action === 'resume') {
-      resumeCampaignExecution(id);
+      await resumeCampaignExecution(id, onLoop);
+      scheduleLoopInBackground(loopPromises);
+      await syncCampaignToDb(campaign.user_email);
       return NextResponse.json({ message: 'Campaign resumed', campaign: localStore.getCampaign(id) });
     } else if (action === 'cancel') {
       cancelCampaignExecution(id);
+      await syncCampaignToDb(campaign.user_email);
       return NextResponse.json({ message: 'Campaign cancelled', campaign: localStore.getCampaign(id) });
     } else if (action === 'retry') {
-      retryCampaignExecution(id);
+      await retryCampaignExecution(id, onLoop);
+      scheduleLoopInBackground(loopPromises);
+      await syncCampaignToDb(campaign.user_email);
       return NextResponse.json({ message: 'Campaign retrying failed emails', campaign: localStore.getCampaign(id) });
     }
 

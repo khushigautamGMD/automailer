@@ -1,64 +1,106 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Navbar } from '@/components/layout/Navbar';
 import { GlassCard } from '@/components/ui/GlassCard';
 import { Badge } from '@/components/ui/Badge';
-import { calculatePercentage, formatDate } from '@/lib/utils';
-import { Campaign, EmailLog } from '@/types';
+import { calculatePercentage } from '@/lib/utils';
+import { Campaign, UserProfile } from '@/types';
+import { supabase } from '@/lib/supabase/client';
 import {
   Send,
   CheckCircle2,
-  AlertTriangle,
-  Clock,
   TrendingUp,
   BarChart2,
-  Users,
-  FileCode,
-  Zap,
-  ShieldCheck,
   Plus,
 } from 'lucide-react';
-
 import { PlanLimitBanner } from '@/components/ui/PlanLimitBanner';
-import { UserProfile } from '@/types';
 
 export default function DashboardPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [profile, setProfile] = useState<UserProfile | undefined>(undefined);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const loadDashboardData = useCallback(async () => {
     let userEmail = '';
     if (typeof window !== 'undefined') {
       try {
         const u = localStorage.getItem('automailer_user');
-        if (u) userEmail = JSON.parse(u).email || '';
-      } catch (e) {}
+        if (u) userEmail = JSON.parse(u).email?.trim().toLowerCase() || '';
+      } catch {}
+
+      try {
+        const cached = localStorage.getItem('automailer_campaigns');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setCampaigns(parsed);
+          }
+        }
+      } catch {}
     }
-    const settingsUrl = '/api/settings' + (userEmail ? `?email=${encodeURIComponent(userEmail)}` : '');
 
-    // Sweep due scheduled campaigns
-    fetch('/api/cron/scheduled').catch(() => {});
+    if (!userEmail) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const sessionEmail = session?.user?.email?.trim().toLowerCase();
+        if (sessionEmail) {
+          userEmail = sessionEmail;
+          localStorage.setItem(
+            'automailer_user',
+            JSON.stringify({ email: sessionEmail, isLoggedIn: true, loginTime: Date.now() })
+          );
+        }
+      } catch {}
+    }
 
-    Promise.all([
-      fetch('/api/campaigns').then((res) => res.json()),
-      fetch(settingsUrl).then((res) => res.json()),
-    ]).then(([campData, profData]) => {
-      setCampaigns(campData.campaigns || []);
-      setProfile(profData.profile);
+    const query = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
+
+    try {
+      await fetch(`/api/cron/scheduled${query}`).catch(() => {});
+
+      const [campRes, profRes] = await Promise.all([
+        fetch(`/api/campaigns${query}`),
+        fetch(`/api/settings${query}`),
+      ]);
+
+      const [campData, profData] = await Promise.all([
+        campRes.ok ? campRes.json() : { campaigns: [] },
+        profRes.ok ? profRes.json() : { profile: undefined },
+      ]);
+
+      if (Array.isArray(campData.campaigns) && campData.campaigns.length > 0) {
+        setCampaigns(campData.campaigns);
+        try {
+          localStorage.setItem('automailer_campaigns', JSON.stringify(campData.campaigns));
+        } catch {}
+      }
+      if (profData.profile) {
+        setProfile(profData.profile);
+      }
+    } catch (err) {
+      console.error('Failed to load dashboard data:', err);
+    } finally {
       setLoading(false);
-    });
+    }
   }, []);
 
+  useEffect(() => {
+    loadDashboardData();
+    const handleUpdate = () => {
+      loadDashboardData();
+    };
+    window.addEventListener('automailer:campaigns_updated', handleUpdate);
+    return () => window.removeEventListener('automailer:campaigns_updated', handleUpdate);
+  }, [loadDashboardData]);
+
   const totalCampaigns = campaigns.length;
-  const totalSent = campaigns.reduce((acc, c) => acc + c.sent_count, 0);
-  const totalFailed = campaigns.reduce((acc, c) => acc + c.failed_count, 0);
-  const totalRecipients = campaigns.reduce((acc, c) => acc + c.total_recipients, 0);
-  const totalOpens = campaigns.reduce((acc, c) => acc + c.open_count, 0);
-  const totalClicks = campaigns.reduce((acc, c) => acc + c.click_count, 0);
+  const totalSent = campaigns.reduce((acc, c) => acc + (c.sent_count || 0), 0);
+  const totalRecipients = campaigns.reduce((acc, c) => acc + (c.total_recipients || 0), 0);
+  const totalOpens = campaigns.reduce((acc, c) => acc + (c.open_count || 0), 0);
+  const totalClicks = campaigns.reduce((acc, c) => acc + (c.click_count || 0), 0);
 
   const overallOpenRate = calculatePercentage(totalOpens, totalSent || 1);
   const overallClickRate = calculatePercentage(totalClicks, totalSent || 1);
@@ -176,7 +218,13 @@ export default function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-200/60 dark:divide-zinc-800/60">
-                  {campaigns.length === 0 ? (
+                  {loading && campaigns.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-6 text-center text-zinc-500">
+                        Loading campaigns...
+                      </td>
+                    </tr>
+                  ) : campaigns.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="py-6 text-center text-zinc-500">
                         No campaigns found. Start your first campaign!
@@ -192,14 +240,16 @@ export default function DashboardPage() {
                         <td className="py-3 px-3">
                           {c.status === 'completed' && <Badge variant="green">Completed</Badge>}
                           {c.status === 'sending' && <Badge variant="blue" dot font-mono>Sending</Badge>}
+                          {c.status === 'scheduled' && <Badge variant="blue" dot>Scheduled</Badge>}
                           {c.status === 'paused' && <Badge variant="amber">Paused</Badge>}
+                          {c.status === 'cancelled' && <Badge variant="rose">Cancelled</Badge>}
                           {c.status === 'draft' && <Badge variant="zinc">Draft</Badge>}
                         </td>
                         <td className="py-3 px-3 font-mono">
-                          {calculatePercentage(c.sent_count + c.failed_count, c.total_recipients)}%
+                          {calculatePercentage((c.sent_count || 0) + (c.failed_count || 0), c.total_recipients || 1)}%
                         </td>
                         <td className="py-3 px-3 font-mono">
-                          {c.sent_count} / {c.total_recipients}
+                          {c.sent_count || 0} / {c.total_recipients || 0}
                         </td>
                         <td className="py-3 px-3">
                           <Link

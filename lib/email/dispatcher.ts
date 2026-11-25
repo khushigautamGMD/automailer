@@ -270,7 +270,7 @@ export async function sendIndividualEmail(payload: SendEmailPayload): Promise<Se
     return {
       success: true,
       messageId: `sim-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
-      senderUsed: activeUser || 'simulation',
+      senderUsed: payload.senderEmail || 'simulation',
       provider: 'simulation',
     };
   }

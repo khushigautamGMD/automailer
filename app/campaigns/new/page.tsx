@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Navbar } from '@/components/layout/Navbar';
@@ -10,7 +10,8 @@ import { EmailEditor } from '@/components/editor/EmailEditor';
 import { SpeedSelector } from '@/components/campaigns/SpeedSelector';
 import { Badge } from '@/components/ui/Badge';
 import { SpeedPreset, ContactList, EmailTemplate, CsvValidationResult, ScheduleType, RecurrencePattern } from '@/types';
-import { ArrowLeft, ArrowRight, Check, Send, Sparkles, FileSpreadsheet, Users, AlertCircle, Calendar, Clock, Repeat, ShieldCheck } from 'lucide-react';
+import { supabase } from '@/lib/supabase/client';
+import { ArrowLeft, ArrowRight, Check, Send, Sparkles, FileSpreadsheet, Users, AlertCircle, Calendar, Clock, Repeat, ShieldCheck, RefreshCw } from 'lucide-react';
 
 export default function NewCampaignWizard() {
   const router = useRouter();
@@ -26,10 +27,13 @@ export default function NewCampaignWizard() {
 
   // Step 2 Contact List Selection or CSV
   const [lists, setLists] = useState<ContactList[]>([]);
+  const [listsLoading, setListsLoading] = useState<boolean>(true);
   const [selectedListId, setSelectedListId] = useState<string>('');
   const [csvResult, setCsvResult] = useState<CsvValidationResult | null>(null);
   const [listCount, setListCount] = useState<number>(0);
   const [step2Error, setStep2Error] = useState<string>('');
+  const submittingRef = useRef<boolean>(false);
+  const clientRequestIdRef = useRef<string>(`req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
 
   // Step 3 Template & Email HTML
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
@@ -58,59 +62,119 @@ export default function NewCampaignWizard() {
   const [scheduleError, setScheduleError] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  useEffect(() => {
-    // Load initial user settings for logged-in account
+  const resolveEmail = useCallback(async (): Promise<string> => {
     let userEmail = '';
     if (typeof window !== 'undefined') {
       try {
         const u = localStorage.getItem('automailer_user');
-        if (u) userEmail = JSON.parse(u).email || '';
-      } catch (e) {}
+        if (u) userEmail = JSON.parse(u).email?.trim().toLowerCase() || '';
+      } catch {}
     }
-    const settingsUrl = '/api/settings' + (userEmail ? `?email=${encodeURIComponent(userEmail)}` : '');
-    fetch(settingsUrl)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.profile) {
-          if (data.profile.sender_name) setSenderName(data.profile.sender_name);
-          if (data.profile.reply_to_email && data.profile.reply_to_email.includes('@')) {
-            setReplyTo(data.profile.reply_to_email);
-          } else if (data.profile.email && data.profile.email.includes('@')) {
-            setReplyTo(data.profile.email);
-          } else if (data.profile.smtp_user && data.profile.smtp_user.includes('@')) {
-            setReplyTo(data.profile.smtp_user);
+    if (!userEmail) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const sessionEmail = session?.user?.email?.trim().toLowerCase();
+        if (sessionEmail) {
+          userEmail = sessionEmail;
+          localStorage.setItem(
+            'automailer_user',
+            JSON.stringify({ email: sessionEmail, isLoggedIn: true, loginTime: Date.now() })
+          );
+        }
+      } catch {}
+    }
+    return userEmail;
+  }, []);
+
+  const loadSavedLists = useCallback(async () => {
+    setListsLoading(true);
+    const userEmail = await resolveEmail();
+
+    // Immediately hydrate cached lists so user sees saved lists without delay
+    let cachedLists: ContactList[] = [];
+    if (typeof window !== 'undefined') {
+      try {
+        const raw =
+          (userEmail ? localStorage.getItem(`automailer_lists_${userEmail}`) : null) ||
+          localStorage.getItem('automailer_lists');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            cachedLists = parsed;
+            setLists(parsed);
+            setSelectedListId((prev) => prev || parsed[0].id);
+            setListCount((prev) => prev || parsed[0].total_contacts || 0);
           }
         }
-      });
+      } catch {}
+    }
 
-    // Fetch user's real saved contact lists
-    const contactsUrl = '/api/contacts' + (userEmail ? `?userEmail=${encodeURIComponent(userEmail)}` : '');
-    fetch(contactsUrl)
-      .then((res) => res.json())
-      .then((data) => {
-        const savedLists = data.lists || [];
-        setLists(savedLists);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    try {
+      const contactsUrl = '/api/contacts' + (userEmail ? `?userEmail=${encodeURIComponent(userEmail)}` : '');
+      const res = await fetch(contactsUrl, { signal: controller.signal });
+      if (res.ok) {
+        const data = await res.json();
+        const savedLists: ContactList[] = data.lists || [];
         if (savedLists.length > 0) {
-          setSelectedListId(savedLists[0].id);
-          setListCount(savedLists[0].total_contacts || 0);
+          setLists(savedLists);
+          setSelectedListId((prev) => prev || savedLists[0].id);
+          setListCount((prev) => prev || savedLists[0].total_contacts || 0);
+          if (typeof window !== 'undefined') {
+            try {
+              const str = JSON.stringify(savedLists);
+              if (userEmail) localStorage.setItem(`automailer_lists_${userEmail}`, str);
+              localStorage.setItem('automailer_lists', str);
+            } catch {}
+          }
+        } else if (cachedLists.length === 0) {
+          setLists([]);
         }
-      });
-  }, []);
+      }
+    } catch (err) {
+      console.error('Failed to load saved contact lists:', err);
+    } finally {
+      clearTimeout(timeoutId);
+      setListsLoading(false);
+    }
+  }, [resolveEmail]);
+
+  useEffect(() => {
+    resolveEmail().then((userEmail) => {
+      const settingsUrl = '/api/settings' + (userEmail ? `?email=${encodeURIComponent(userEmail)}` : '');
+      fetch(settingsUrl)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.profile) {
+            if (data.profile.sender_name) setSenderName(data.profile.sender_name);
+            if (data.profile.reply_to_email && data.profile.reply_to_email.includes('@')) {
+              setReplyTo(data.profile.reply_to_email);
+            } else if (data.profile.email && data.profile.email.includes('@')) {
+              setReplyTo(data.profile.email);
+            } else if (data.profile.smtp_user && data.profile.smtp_user.includes('@')) {
+              setReplyTo(data.profile.smtp_user);
+            }
+          }
+        })
+        .catch(() => {});
+    });
+
+    loadSavedLists();
+  }, [resolveEmail, loadSavedLists]);
+
+  const csvCell = (val?: string) => {
+    const str = String(val || '');
+    return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+  };
 
   const handleCsvValidationComplete = async (res: CsvValidationResult, listName: string) => {
     setCsvResult(res);
     setStep2Error('');
 
     if (res.valid.length > 0) {
-      // Auto-upload valid contacts to localStore immediately so list ID is ready!
       try {
-        let userEmail = '';
-        if (typeof window !== 'undefined') {
-          try {
-            const u = localStorage.getItem('automailer_user');
-            if (u) userEmail = JSON.parse(u).email || '';
-          } catch (e) {}
-        }
+        const userEmail = await resolveEmail();
         const uploadRes = await fetch('/api/upload', {
           method: 'POST',
           body: (() => {
@@ -123,7 +187,7 @@ export default function NewCampaignWizard() {
                 res.valid
                   .map(
                     (v) =>
-                      `${v.email},${v.firstname || ''},${v.lastname || ''},${v.company || ''},${v.phone || ''}`
+                      `${csvCell(v.email)},${csvCell(v.firstname)},${csvCell(v.lastname)},${csvCell(v.company)},${csvCell(v.phone)}`
                   )
                   .join('\n')
             );
@@ -132,9 +196,17 @@ export default function NewCampaignWizard() {
         });
         const uploadData = await uploadRes.json();
         if (uploadData.createdList) {
-          setLists([uploadData.createdList, ...lists]);
+          const updatedLists = [uploadData.createdList, ...lists.filter((l) => l.id !== uploadData.createdList.id)];
+          setLists(updatedLists);
           setSelectedListId(uploadData.createdList.id);
           setListCount(res.valid.length);
+          if (typeof window !== 'undefined') {
+            try {
+              const str = JSON.stringify(updatedLists);
+              if (userEmail) localStorage.setItem(`automailer_lists_${userEmail}`, str);
+              localStorage.setItem('automailer_lists', str);
+            } catch {}
+          }
         }
       } catch (err) {
         console.error('Auto upload list error:', err);
@@ -144,7 +216,7 @@ export default function NewCampaignWizard() {
 
   const handleSelectExistingList = (list: ContactList) => {
     setSelectedListId(list.id);
-    setListCount(list.total_contacts || 8);
+    setListCount(list.total_contacts ?? 0);
     setStep2Error('');
   };
 
@@ -200,6 +272,8 @@ export default function NewCampaignWizard() {
   };
 
   const handleLaunchCampaign = async () => {
+    if (submittingRef.current || isSubmitting) return;
+
     const totalCount = (csvResult && csvResult.valid.length > 0) ? csvResult.valid.length : listCount;
     if (totalCount === 0) {
       alert('Cannot launch campaign: 0 recipients detected. Please return to Step 2 and upload your contacts CSV.');
@@ -219,17 +293,11 @@ export default function NewCampaignWizard() {
     }
     setScheduleError('');
 
+    submittingRef.current = true;
     setIsSubmitting(true);
     try {
       const targetListId = selectedListId || 'lst-1';
-
-      let userEmail = '';
-      if (typeof window !== 'undefined') {
-        try {
-          const u = localStorage.getItem('automailer_user');
-          if (u) userEmail = JSON.parse(u).email || '';
-        } catch (e) {}
-      }
+      const userEmail = await resolveEmail();
 
       const isScheduled = deliveryMode === 'scheduled';
       const scheduledIso = isScheduled ? new Date(scheduledDateTime).toISOString() : undefined;
@@ -254,6 +322,7 @@ export default function NewCampaignWizard() {
           recurrence_pattern: isScheduled && scheduleType === 'recurring' ? recurrencePattern : undefined,
           recurrence_interval_hours: recurrenceIntervalHours,
           auto_retry_failed: autoRetryFailed,
+          client_request_id: clientRequestIdRef.current,
         }),
       });
 
@@ -288,6 +357,7 @@ export default function NewCampaignWizard() {
       }
     } catch (err: any) {
       alert(`Error launching campaign: ${err.message}`);
+      submittingRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -447,29 +517,50 @@ export default function NewCampaignWizard() {
 
               {/* Option A: Choose from existing lists */}
               <div className="space-y-2">
-                <label className="block text-xs font-bold text-zinc-700 dark:text-zinc-300">
-                  Option A: Choose Saved Contact List
-                </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {lists.map((l) => (
-                    <button
-                      key={l.id}
-                      type="button"
-                      onClick={() => handleSelectExistingList(l)}
-                      className={`flex items-center justify-between rounded-xl border p-3.5 text-left transition-all ${
-                        selectedListId === l.id
-                          ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-500/20 dark:border-blue-500 dark:bg-blue-500/10'
-                          : 'border-zinc-200 bg-white hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900'
-                      }`}
-                    >
-                      <div>
-                        <h4 className="text-xs font-bold text-zinc-900 dark:text-white">{l.name}</h4>
-                        <p className="text-[11px] text-zinc-500">{l.description || 'Saved contact list'}</p>
-                      </div>
-                      <Badge variant="blue">{l.total_contacts} Contacts</Badge>
-                    </button>
-                  ))}
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-zinc-700 dark:text-zinc-300">
+                    Option A: Choose Saved Contact List
+                  </label>
+                  <button
+                    type="button"
+                    onClick={loadSavedLists}
+                    disabled={listsLoading}
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-50"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${listsLoading ? 'animate-spin' : ''}`} />
+                    <span>{listsLoading ? 'Loading...' : 'Refresh Lists'}</span>
+                  </button>
                 </div>
+                {listsLoading && lists.length === 0 ? (
+                  <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 text-xs text-zinc-500">
+                    Loading saved contact lists...
+                  </div>
+                ) : lists.length === 0 ? (
+                  <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 text-xs text-zinc-500">
+                    No saved lists found yet. Upload a CSV below or add lists in Contacts &amp; CSV.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {lists.map((l) => (
+                      <button
+                        key={l.id}
+                        type="button"
+                        onClick={() => handleSelectExistingList(l)}
+                        className={`flex items-center justify-between rounded-xl border p-3.5 text-left transition-all ${
+                          selectedListId === l.id
+                            ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-500/20 dark:border-blue-500 dark:bg-blue-500/10'
+                            : 'border-zinc-200 bg-white hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900'
+                        }`}
+                      >
+                        <div>
+                          <h4 className="text-xs font-bold text-zinc-900 dark:text-white">{l.name}</h4>
+                          <p className="text-[11px] text-zinc-500">{l.description || 'Saved contact list'}</p>
+                        </div>
+                        <Badge variant="blue">{l.total_contacts} Contacts</Badge>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Option B: CSV Upload & Manual Add */}

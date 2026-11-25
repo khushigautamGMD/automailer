@@ -23,5 +23,26 @@ export function isSupabaseConfigured(): boolean {
   return true;
 }
 
-export const supabase: SupabaseClient = createClient(getSupabaseUrl(), getSupabaseKey());
+// Guard every Supabase HTTP request with an 8-second timeout so slow/unreachable DB calls never hang UI or API routes
+const fetchWithTimeout: typeof fetch = async (input, init) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  if (init?.signal) {
+    if (init.signal.aborted) {
+      controller.abort();
+    } else {
+      init.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+  }
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
 
+export const supabase: SupabaseClient = createClient(getSupabaseUrl(), getSupabaseKey(), {
+  global: {
+    fetch: fetchWithTimeout,
+  },
+});

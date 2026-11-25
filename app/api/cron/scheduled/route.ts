@@ -1,13 +1,14 @@
-import { NextResponse } from 'next/server';
-import { checkAndExecuteScheduledCampaigns } from '@/lib/queue/campaign-runner';
+import { NextResponse, after } from 'next/server';
+import { sweepScheduledCampaigns } from '@/lib/queue/campaign-runner';
 import { localStore } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const email = searchParams.get('email');
+    const email = searchParams.get('email')?.trim().toLowerCase();
 
     if (email) {
       const { isSupabaseConfigured } = await import('@/lib/supabase/client');
@@ -24,14 +25,34 @@ export async function GET(req: Request) {
       }
     }
 
-    const triggeredIds = await checkAndExecuteScheduledCampaigns();
+    const loopPromises: Promise<void>[] = [];
+    const sweepResult = await sweepScheduledCampaigns((p) => {
+      loopPromises.push(p);
+    });
+
+    // Keep serverless lambda alive for triggered sending loops after response is returned
+    if (loopPromises.length > 0) {
+      try {
+        after(async () => {
+          await Promise.allSettled(loopPromises);
+        });
+      } catch {
+        // Running outside Next.js request scope (e.g. unit test); promises continue in background
+      }
+    }
+
     const scheduled = localStore.getAllScheduledCampaigns();
 
     return NextResponse.json({
       success: true,
+      schedulerActive: true,
       timestamp: new Date().toISOString(),
-      triggeredCount: triggeredIds.length,
-      triggeredCampaignIds: triggeredIds,
+      triggeredCount: sweepResult.triggeredIds.length,
+      triggeredCampaignIds: sweepResult.triggeredIds,
+      expiredPausedCount: sweepResult.expiredPausedIds.length,
+      expiredPausedIds: sweepResult.expiredPausedIds,
+      staleSendingPausedCount: sweepResult.staleSendingPausedIds.length,
+      staleSendingPausedIds: sweepResult.staleSendingPausedIds,
       totalScheduled: scheduled.length,
       upcomingSchedules: scheduled.map((c) => ({
         id: c.id,

@@ -58,6 +58,8 @@ export async function POST(req: Request) {
     }
 
     const payload = { ...body, ...(email ? { email } : {}) };
+    // Never overwrite campaign storage inside email_signature from settings saves
+    delete payload.email_signature;
 
     // Persist to localStore under user email (writes to store.json)
     const updatedProfile = localStore.updateProfile(payload, email);

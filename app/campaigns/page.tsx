@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Navbar } from '@/components/layout/Navbar';
@@ -8,6 +8,7 @@ import { GlassCard } from '@/components/ui/GlassCard';
 import { Badge } from '@/components/ui/Badge';
 import { formatDate, calculatePercentage } from '@/lib/utils';
 import { Campaign, EmailLog, ScheduleType, RecurrencePattern } from '@/types';
+import { supabase } from '@/lib/supabase/client';
 import { Plus, BarChart2, Play, AlertCircle, RefreshCw, Layers, ChevronDown, ChevronUp, Users, Building2, Trash2, Send, Clock, Calendar, Repeat, Edit3, X } from 'lucide-react';
 
 export default function CampaignsPage() {
@@ -147,21 +148,42 @@ export default function CampaignsPage() {
     }
   };
 
-  // Synchronize server response with browser localStorage
-  const syncWithLocalStorage = (serverCampaigns: Campaign[]) => {
+  const resolveUserEmail = useCallback(async (): Promise<string> => {
+    let userEmail = '';
+    try {
+      const u = localStorage.getItem('automailer_user');
+      if (u) userEmail = JSON.parse(u).email?.trim().toLowerCase() || '';
+    } catch {}
+    if (!userEmail) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const sessionEmail = session?.user?.email?.trim().toLowerCase();
+        if (sessionEmail) {
+          userEmail = sessionEmail;
+          localStorage.setItem(
+            'automailer_user',
+            JSON.stringify({ email: sessionEmail, isLoggedIn: true, loginTime: Date.now() })
+          );
+        }
+      } catch {}
+    }
+    return userEmail;
+  }, []);
+
+  // Synchronize server response with browser localStorage (server wins for matching IDs)
+  const syncWithLocalStorage = (serverCampaigns: Campaign[], userEmail: string) => {
     try {
       const localRaw = localStorage.getItem('automailer_campaigns');
       const localList: Campaign[] = localRaw ? JSON.parse(localRaw) : [];
 
       const map = new Map<string, Campaign>();
-      // 1. Put local campaigns first
       for (const c of localList) {
         if (c && c.id) map.set(c.id, c);
       }
-      // 2. Server campaigns override or add
       for (const c of serverCampaigns) {
         if (c && c.id) {
-          map.set(c.id, { ...(map.get(c.id) || {}), ...c });
+          const prev = map.get(c.id);
+          map.set(c.id, prev ? { ...prev, ...c } : c);
         }
       }
 
@@ -172,51 +194,43 @@ export default function CampaignsPage() {
       localStorage.setItem('automailer_campaigns', JSON.stringify(merged));
       setCampaigns(merged);
 
-      // 3. Push to server if local had items missing from server cache
+      // Push any client-only items missing from server (idempotent upsert on server)
       if (serverCampaigns.length < merged.length) {
-        let userEmail = '';
-        try {
-          const u = localStorage.getItem('automailer_user');
-          if (u) userEmail = JSON.parse(u).email || '';
-        } catch (e) {}
-
-        fetch('/api/campaigns', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'sync_cache', user_email: userEmail, campaigns: merged }),
-        }).catch(() => {});
+        const serverIds = new Set(serverCampaigns.map((s) => s.id));
+        const missing = merged.filter((m) => !serverIds.has(m.id));
+        if (missing.length > 0) {
+          fetch('/api/campaigns', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'sync_cache', user_email: userEmail, campaigns: missing }),
+          }).catch(() => {});
+        }
       }
     } catch (e) {
       setCampaigns(serverCampaigns);
     }
   };
 
-  const loadCampaigns = async () => {
+  const loadCampaigns = useCallback(async () => {
     setIsRefreshing(true);
-    let userEmail = '';
-    try {
-      const u = localStorage.getItem('automailer_user');
-      if (u) userEmail = JSON.parse(u).email || '';
-    } catch (e) {}
-
+    const userEmail = await resolveUserEmail();
     const query = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
     try {
-      // Trigger sweep for any due scheduled campaigns so they fire seamlessly
-      fetch('/api/cron/scheduled').catch(() => {});
+      // Sweep due / overdue campaigns first with user context so status is current
+      await fetch(`/api/cron/scheduled${query}`).catch(() => {});
 
       const res = await fetch(`/api/campaigns${query}`);
       const data = await res.json();
       const serverList: Campaign[] = data.campaigns || [];
-      syncWithLocalStorage(serverList);
+      syncWithLocalStorage(serverList, userEmail);
     } catch (err) {
       console.error('Failed to load campaigns:', err);
     } finally {
       setIsRefreshing(false);
     }
-  };
+  }, [resolveUserEmail]);
 
   useEffect(() => {
-    // Immediate read from localStorage so UI renders instantly with zero flicker
     try {
       const localRaw = localStorage.getItem('automailer_campaigns');
       if (localRaw) {
@@ -228,7 +242,13 @@ export default function CampaignsPage() {
     } catch (e) {}
 
     loadCampaigns();
-  }, []);
+
+    const handleUpdate = () => {
+      loadCampaigns();
+    };
+    window.addEventListener('automailer:campaigns_updated', handleUpdate);
+    return () => window.removeEventListener('automailer:campaigns_updated', handleUpdate);
+  }, [loadCampaigns]);
 
   // Calculate live counts per status tab
   const counts = {
@@ -390,10 +410,17 @@ export default function CampaignsPage() {
                           Subject: &quot;{c.subject}&quot; • Created {formatDate(c.created_at)}
                           {c.status === 'scheduled' && c.scheduled_at && (
                             <span className="ml-2 font-semibold text-blue-600 dark:text-blue-400">
-                              (Will send {new Date(c.scheduled_at) > new Date() ? `in ${Math.round((new Date(c.scheduled_at).getTime() - Date.now()) / (60 * 1000))} min` : 'soon'})
+                              {new Date(c.scheduled_at) > new Date()
+                                ? `(Will send in ${Math.max(1, Math.round((new Date(c.scheduled_at).getTime() - Date.now()) / (60 * 1000)))} min)`
+                                : '(Due now)'}
                             </span>
                           )}
                         </p>
+                        {c.schedule_note && (
+                          <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                            {c.schedule_note}
+                          </p>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-3 sm:gap-4 w-full md:w-auto justify-between md:justify-end border-t pt-3 md:border-0 md:pt-0 border-zinc-100 dark:border-zinc-800">

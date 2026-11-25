@@ -20,7 +20,9 @@ export default function ContactsPage() {
   const [showImporter, setShowImporter] = useState<boolean>(false);
   const [showSingleMailModal, setShowSingleMailModal] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
+  const fetchCounterRef = React.useRef<number>(0);
 
   // Single Mail Modal State
   const [singleEmail, setSingleEmail] = useState('');
@@ -44,7 +46,9 @@ export default function ContactsPage() {
   };
 
   const fetchContactsData = async (userEmailOverride?: string | null) => {
+    const reqId = ++fetchCounterRef.current;
     const emailToUse = (userEmailOverride !== undefined ? userEmailOverride : currentUserEmail)?.trim().toLowerCase() || '';
+    setLoadError(null);
 
     // 1. Immediately read from localStorage cache for instant display
     let cachedLists: ContactList[] = [];
@@ -69,11 +73,16 @@ export default function ContactsPage() {
       } catch (e) {}
     }
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
+
     try {
-      setLoading(cachedContacts.length === 0);
+      setLoading(cachedContacts.length === 0 && cachedLists.length === 0);
       const url = '/api/contacts' + (emailToUse ? `?userEmail=${encodeURIComponent(emailToUse)}` : '');
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: controller.signal });
       const data = await res.json();
+      if (reqId !== fetchCounterRef.current) return;
+
       if (res.ok) {
         const serverLists: ContactList[] = data.lists || [];
         const serverContacts: Contact[] = data.contacts || [];
@@ -82,8 +91,8 @@ export default function ContactsPage() {
           setLists(serverLists);
           setContacts(serverContacts);
           updateLocalStorageCache(emailToUse, serverLists, serverContacts);
-        } else if (cachedContacts.length > 0) {
-          // If server was cold/empty but client had cached contacts, auto-sync cache to server!
+        } else if (cachedLists.length > 0 || cachedContacts.length > 0) {
+          // If server was cold/empty but client had cached lists/contacts, auto-sync cache to server
           fetch('/api/contacts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -93,13 +102,24 @@ export default function ContactsPage() {
               lists: cachedLists,
               contacts: cachedContacts,
             }),
-          });
+          }).catch(() => {});
         }
+      } else {
+        setLoadError(data.error || 'Failed to load contacts from server.');
       }
-    } catch (err) {
+    } catch (err: any) {
+      if (reqId !== fetchCounterRef.current) return;
       console.error('Failed to load contacts data:', err);
+      setLoadError(
+        err?.name === 'AbortError'
+          ? 'Loading contacts timed out. Click Retry to try again.'
+          : 'Unable to reach contacts service. Showing cached lists if available.'
+      );
     } finally {
-      setLoading(false);
+      clearTimeout(timeoutId);
+      if (reqId === fetchCounterRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -119,17 +139,31 @@ export default function ContactsPage() {
       setCurrentUserEmail(resolvedEmail);
     }
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      const sessionEmail = session?.user?.email?.trim().toLowerCase();
-      if (sessionEmail && sessionEmail !== resolvedEmail) {
-        resolvedEmail = sessionEmail;
-        setCurrentUserEmail(sessionEmail);
-        fetchContactsData(sessionEmail);
-      }
-    });
+    supabase.auth
+      .getSession()
+      .then(({ data: { session } }) => {
+        const sessionEmail = session?.user?.email?.trim().toLowerCase();
+        if (sessionEmail && sessionEmail !== resolvedEmail) {
+          resolvedEmail = sessionEmail;
+          setCurrentUserEmail(sessionEmail);
+          try {
+            localStorage.setItem(
+              'automailer_user',
+              JSON.stringify({ email: sessionEmail, isLoggedIn: true, loginTime: Date.now() })
+            );
+          } catch {}
+          fetchContactsData(sessionEmail);
+        }
+      })
+      .catch(() => {});
 
     fetchContactsData(resolvedEmail);
   }, []);
+
+  const csvCell = (val?: string) => {
+    const str = String(val || '');
+    return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+  };
 
   const handleValidationComplete = async (res: CsvValidationResult, listName: string) => {
     if (res.valid.length === 0) return;
@@ -147,7 +181,7 @@ export default function ContactsPage() {
               res.valid
                 .map(
                   (v) =>
-                    `${v.email},${v.firstname || ''},${v.lastname || ''},${v.company || ''},${v.phone || ''}`
+                    `${csvCell(v.email)},${csvCell(v.firstname)},${csvCell(v.lastname)},${csvCell(v.company)},${csvCell(v.phone)}`
                 )
                 .join('\n')
           );
@@ -483,6 +517,20 @@ export default function ContactsPage() {
           </GlassCard>
 
           {/* Contact Table / Empty State */}
+          {loadError && (
+            <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-3.5 text-xs flex items-center justify-between gap-3">
+              <span className="font-semibold text-rose-500 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" /> {loadError}
+              </span>
+              <button
+                type="button"
+                onClick={() => fetchContactsData()}
+                className="rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-rose-700 shrink-0"
+              >
+                Retry
+              </button>
+            </div>
+          )}
           <GlassCard hoverEffect={false}>
             {loading ? (
               <div className="py-12 text-center text-xs font-bold text-zinc-400">Loading contacts...</div>

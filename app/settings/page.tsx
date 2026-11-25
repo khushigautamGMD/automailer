@@ -227,13 +227,14 @@ export default function SettingsPage() {
     }
 
     try {
+      const { email_signature: _omitSig, ...safeProfile } = targetProfile || {};
       const url = '/api/settings' + (userEmail ? `?email=${encodeURIComponent(userEmail)}` : '');
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           profile: {
-            ...targetProfile,
+            ...safeProfile,
             ...(userEmail ? { email: userEmail } : {}),
             smtp_accounts: targetAccounts,
           },

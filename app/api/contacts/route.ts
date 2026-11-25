@@ -10,6 +10,16 @@ import {
   deleteContactFromDb,
   deleteListFromDb,
 } from '@/lib/supabase/db';
+import { ContactList, Contact } from '@/types';
+
+export const dynamic = 'force-dynamic';
+
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
 
 export async function GET(req: Request) {
   try {
@@ -20,15 +30,31 @@ export async function GET(req: Request) {
     let lists = localStore.getLists(userEmail);
     let contacts = localStore.getContacts(userEmail, listId);
 
-    // Sync from Supabase cloud database if configured and user email provided
+    // Sync from Supabase cloud database if configured and user email provided (with 8s timeout)
     if (userEmail && isSupabaseConfigured()) {
       try {
-        const dbLists = await getListsByUser(userEmail);
-        const dbContacts = await getContactsByUser(userEmail, listId);
-        if (dbLists.length > 0 || dbContacts.length > 0) {
+        const [dbLists, dbContacts] = await withTimeout(
+          Promise.all([
+            getListsByUser(userEmail),
+            getContactsByUser(userEmail, listId),
+          ]),
+          8000,
+          [[], []] as [ContactList[], Contact[]]
+        );
+
+        if (dbLists.length > 0) {
           lists = dbLists;
+          for (const l of dbLists) {
+            localStore.upsertList(l, userEmail);
+          }
+        }
+        if (dbContacts.length > 0) {
           contacts = dbContacts;
-          localStore.syncUserContacts(userEmail, dbLists, dbContacts);
+          if (!listId || listId === 'all') {
+            localStore.syncUserContacts(userEmail, lists, dbContacts);
+          } else {
+            localStore.upsertContacts(listId, dbContacts, userEmail);
+          }
         }
       } catch (e) {
         console.error('Failed to sync contacts from DB:', e);
@@ -59,23 +85,41 @@ export async function POST(req: Request) {
     } = body;
 
     const { searchParams } = new URL(req.url);
-    const userEmail = (rawUserEmail || body.emailAddress || searchParams.get('userEmail') || searchParams.get('email') || '').trim().toLowerCase();
+    const userEmail = (
+      rawUserEmail ||
+      body.emailAddress ||
+      searchParams.get('userEmail') ||
+      searchParams.get('email') ||
+      ''
+    )
+      .trim()
+      .toLowerCase();
 
-    // Sync cached contacts from browser if server was cold
+    // Sync cached contacts from browser idempotently without generating duplicate IDs
     if (action === 'sync_cache') {
       if (Array.isArray(listsPayload) && listsPayload.length > 0) {
         for (const l of listsPayload) {
-          localStore.addList(l, userEmail);
-          if (userEmail && isSupabaseConfigured()) {
-            await saveListToDb(userEmail, l);
+          if (l && l.id) {
+            localStore.upsertList(l, userEmail);
+            if (userEmail && isSupabaseConfigured()) {
+              await saveListToDb(userEmail, l);
+            }
           }
         }
       }
       if (Array.isArray(contactsPayload) && contactsPayload.length > 0) {
-        const targetListId = listId || (listsPayload?.[0]?.id) || 'default-list';
-        const created = localStore.addContacts(targetListId, contactsPayload, userEmail);
-        if (userEmail && isSupabaseConfigured()) {
-          await saveContactsToDb(userEmail, targetListId, created);
+        const grouped = new Map<string, Contact[]>();
+        for (const c of contactsPayload) {
+          if (!c || !c.email) continue;
+          const lid = c.list_id || listId || listsPayload?.[0]?.id || 'default-list';
+          if (!grouped.has(lid)) grouped.set(lid, []);
+          grouped.get(lid)!.push({ ...c, list_id: lid });
+        }
+        for (const [lid, groupContacts] of grouped.entries()) {
+          localStore.upsertContacts(lid, groupContacts, userEmail);
+          if (userEmail && isSupabaseConfigured()) {
+            await saveContactsToDb(userEmail, lid, groupContacts);
+          }
         }
       }
       return NextResponse.json({
@@ -105,7 +149,6 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Valid email address is required' }, { status: 400 });
       }
 
-      // Check contact limit for plan
       const profile = localStore.getProfile(userEmail);
       const existingCount = localStore.getContacts(userEmail).length;
       const importCheck = canImportContacts(profile, existingCount, 1);
@@ -115,7 +158,7 @@ export async function POST(req: Request) {
 
       let targetListId = listId;
       if (!targetListId || targetListId === 'all') {
-        let lists = localStore.getLists(userEmail);
+        const lists = localStore.getLists(userEmail);
         if (lists.length === 0) {
           const defaultList = localStore.addList({ name: 'Default Contact List' }, userEmail);
           if (userEmail && isSupabaseConfigured()) {
@@ -171,7 +214,7 @@ export async function POST(req: Request) {
 
       let targetListId = listId;
       if (!targetListId || targetListId === 'all') {
-        let lists = localStore.getLists(userEmail);
+        const lists = localStore.getLists(userEmail);
         if (lists.length === 0) {
           const defaultList = localStore.addList({ name: listName || 'Imported Contact List' }, userEmail);
           if (userEmail && isSupabaseConfigured()) {

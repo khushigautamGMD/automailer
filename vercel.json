@@ -6,7 +6,7 @@
   "regions": ["iad1"],
   "crons": [
     {
-      "path": "/api/campaigns/cron",
+      "path": "/api/cron/scheduled",
       "schedule": "0 0 * * *"
     }
   ]

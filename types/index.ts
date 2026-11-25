@@ -99,6 +99,10 @@ export interface Campaign {
   next_run_at?: string;
   execution_count?: number;
   auto_retry_failed?: boolean;
+  sent_recipients?: string[];
+  failed_recipients?: string[];
+  client_request_id?: string;
+  schedule_note?: string;
   total_recipients: number;
   sent_count: number;
   failed_count: number;

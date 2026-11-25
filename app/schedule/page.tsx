@@ -8,6 +8,7 @@ import { GlassCard } from '@/components/ui/GlassCard';
 import { Badge } from '@/components/ui/Badge';
 import { formatDate } from '@/lib/utils';
 import { Campaign, RecurrencePattern, ScheduleType } from '@/types';
+import { supabase } from '@/lib/supabase/client';
 import {
   CalendarClock,
   Clock,
@@ -34,6 +35,7 @@ export default function SchedulePage() {
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [nowEpoch, setNowEpoch] = useState<number>(Date.now());
+  const [lastSweepInfo, setLastSweepInfo] = useState<{ timestamp?: string; expiredPausedCount?: number } | null>(null);
 
   // Reschedule Modal State
   const [rescheduleTarget, setRescheduleTarget] = useState<Campaign | null>(null);
@@ -57,13 +59,36 @@ export default function SchedulePage() {
     let userEmail = '';
     try {
       const u = localStorage.getItem('automailer_user');
-      if (u) userEmail = JSON.parse(u).email || '';
+      if (u) userEmail = JSON.parse(u).email?.trim().toLowerCase() || '';
     } catch (e) {}
+
+    if (!userEmail) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const sessionEmail = session?.user?.email?.trim().toLowerCase();
+        if (sessionEmail) {
+          userEmail = sessionEmail;
+          localStorage.setItem(
+            'automailer_user',
+            JSON.stringify({ email: sessionEmail, isLoggedIn: true, loginTime: Date.now() })
+          );
+        }
+      } catch {}
+    }
 
     const query = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
     try {
       // Trigger scheduler sweep with user context
-      await fetch(`/api/cron/scheduled${query}`).catch(() => {});
+      const sweepRes = await fetch(`/api/cron/scheduled${query}`).catch(() => null);
+      if (sweepRes && sweepRes.ok) {
+        const sweepData = await sweepRes.json().catch(() => null);
+        if (sweepData) {
+          setLastSweepInfo({
+            timestamp: sweepData.timestamp,
+            expiredPausedCount: sweepData.expiredPausedCount || 0,
+          });
+        }
+      }
 
       const res = await fetch(`/api/campaigns${query}`);
       const data = await res.json();
@@ -349,7 +374,12 @@ export default function SchedulePage() {
                   Guaranteed Delivery Engine Active
                 </h4>
                 <p className="text-[11px] text-zinc-600 dark:text-zinc-300 mt-0.5">
-                  Scheduled campaigns automatically sweep every 15 seconds. On every scheduled trigger, 100% of recipient contacts receive the email with automated multi-sender failover and instant retries.
+                  Scheduled campaigns sweep every 15 seconds while the app is open (plus cron endpoint <code>/api/cron/scheduled</code>). Overdue campaigns more than 30 minutes past their window are safely auto-paused instead of firing late.
+                  {lastSweepInfo?.timestamp && (
+                    <span className="ml-1 font-mono text-emerald-700 dark:text-emerald-300">
+                      Last sweep: {new Date(lastSweepInfo.timestamp).toLocaleTimeString()}
+                    </span>
+                  )}
                 </p>
               </div>
             </div>

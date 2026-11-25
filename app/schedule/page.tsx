@@ -78,6 +78,32 @@ export default function SchedulePage() {
 
     const query = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
     try {
+      // Load localStorage campaigns first so client-created schedules aren't lost on cold starts
+      let localList: Campaign[] = [];
+      try {
+        const localRaw = localStorage.getItem('automailer_campaigns');
+        if (localRaw) {
+          const parsed = JSON.parse(localRaw);
+          if (Array.isArray(parsed)) localList = parsed;
+        }
+      } catch {}
+
+      const initialRes = await fetch(`/api/campaigns${query}`).catch(() => null);
+      const initialData = initialRes && initialRes.ok ? await initialRes.json().catch(() => ({})) : {};
+      let serverList: Campaign[] = initialData.campaigns || [];
+
+      if (localList.length > serverList.length) {
+        const serverIds = new Set(serverList.map((s) => s.id));
+        const missing = localList.filter((m) => m && m.id && !serverIds.has(m.id));
+        if (missing.length > 0) {
+          await fetch('/api/campaigns', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'sync_cache', user_email: userEmail, campaigns: missing }),
+          }).catch(() => {});
+        }
+      }
+
       // Trigger scheduler sweep with user context
       const sweepRes = await fetch(`/api/cron/scheduled${query}`).catch(() => null);
       if (sweepRes && sweepRes.ok) {
@@ -92,7 +118,23 @@ export default function SchedulePage() {
 
       const res = await fetch(`/api/campaigns${query}`);
       const data = await res.json();
-      const list: Campaign[] = data.campaigns || [];
+      serverList = data.campaigns || [];
+
+      const map = new Map<string, Campaign>();
+      for (const c of localList) {
+        if (c && c.id) map.set(c.id, c);
+      }
+      for (const c of serverList) {
+        if (c && c.id) {
+          const prev = map.get(c.id);
+          map.set(c.id, prev ? { ...prev, ...c } : c);
+        }
+      }
+      const list = Array.from(map.values());
+      try {
+        localStorage.setItem('automailer_campaigns', JSON.stringify(list));
+      } catch {}
+
       setAllCampaigns(list);
 
       const scheduledList = list.filter((c) => c.status === 'scheduled');
@@ -374,7 +416,7 @@ export default function SchedulePage() {
                   Guaranteed Delivery Engine Active
                 </h4>
                 <p className="text-[11px] text-zinc-600 dark:text-zinc-300 mt-0.5">
-                  Scheduled campaigns sweep every 15 seconds while the app is open (plus cron endpoint <code>/api/cron/scheduled</code>). Overdue campaigns more than 30 minutes past their window are safely auto-paused instead of firing late.
+                  Scheduled campaigns sweep every 15 seconds while the app is open (plus cron endpoint <code>/api/cron/scheduled</code>). Overdue campaigns older than 12 hours (or from closed past dates) are safely auto-paused instead of firing late.
                   {lastSweepInfo?.timestamp && (
                     <span className="ml-1 font-mono text-emerald-700 dark:text-emerald-300">
                       Last sweep: {new Date(lastSweepInfo.timestamp).toLocaleTimeString()}
@@ -535,6 +577,48 @@ export default function SchedulePage() {
               )}
             </div>
           </GlassCard>
+
+          {/* Recently Dispatched / Auto-Paused Scheduled History */}
+          {allCampaigns.some((c) => c.status !== 'scheduled' && (c.scheduled_at || c.execution_count || c.schedule_note)) && (
+            <GlassCard hoverEffect={false}>
+              <div className="flex items-center justify-between border-b border-zinc-200/80 pb-3 dark:border-zinc-800">
+                <h3 className="text-sm font-bold text-zinc-900 dark:text-white flex items-center gap-2">
+                  <Zap className="h-4 w-4 text-emerald-500" />
+                  <span>Triggered &amp; Past Scheduled Campaigns</span>
+                </h3>
+                <Link href="/campaigns" className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline">
+                  View All in Campaigns
+                </Link>
+              </div>
+              <div className="mt-3 divide-y divide-zinc-200/60 dark:divide-zinc-800/60">
+                {allCampaigns
+                  .filter((c) => c.status !== 'scheduled' && (c.scheduled_at || c.execution_count || c.schedule_note))
+                  .slice(0, 10)
+                  .map((c) => (
+                    <div key={c.id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                      <div>
+                        <div className="font-bold text-zinc-900 dark:text-white flex items-center gap-2">
+                          <span>{c.name}</span>
+                          {c.status === 'sending' && <Badge variant="blue" dot>Sending</Badge>}
+                          {c.status === 'completed' && <Badge variant="green">Completed</Badge>}
+                          {c.status === 'paused' && <Badge variant="amber">Paused</Badge>}
+                        </div>
+                        <div className="text-[11px] text-zinc-500">
+                          {c.sent_count || 0} / {c.total_recipients || 0} sent
+                          {c.schedule_note ? ` • ${c.schedule_note}` : ''}
+                        </div>
+                      </div>
+                      <Link
+                        href={c.status === 'sending' ? `/campaigns/${c.id}/progress` : `/campaigns/${c.id}/report`}
+                        className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline shrink-0"
+                      >
+                        {c.status === 'sending' ? 'Live Monitor →' : 'View Report →'}
+                      </Link>
+                    </div>
+                  ))}
+              </div>
+            </GlassCard>
+          )}
 
           {/* Quick Reschedule Modal */}
           {rescheduleTarget && (

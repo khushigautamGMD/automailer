@@ -734,25 +734,12 @@ export const localStore = {
   },
   syncUserCampaigns: (userEmail: string, campaigns: Campaign[]) => {
     syncFromDisk();
-    if (!userEmail || !userEmail.trim()) return;
-    const key = userEmail.trim().toLowerCase();
-    if (!globalStore.userCampaigns) globalStore.userCampaigns = {};
-    globalStore.userCampaigns[key] = campaigns;
-
-    // Merge into globalStore.campaigns
-    const existingIds = new Set(globalStore.campaigns.map((c) => c.id));
+    if (!userEmail || !userEmail.trim() || !Array.isArray(campaigns)) return;
     for (const c of campaigns) {
-      if (!existingIds.has(c.id)) {
-        globalStore.campaigns.unshift(c);
-        existingIds.add(c.id);
-      } else {
-        const idx = globalStore.campaigns.findIndex((x) => x.id === c.id);
-        if (idx !== -1) {
-          globalStore.campaigns[idx] = { ...globalStore.campaigns[idx], ...c };
-        }
+      if (c && c.id) {
+        localStore.upsertCampaign(c, userEmail);
       }
     }
-    saveToDisk(globalStore);
   },
   deleteCampaign: (id: string, userEmail?: string) => {
     syncFromDisk();

@@ -4,9 +4,10 @@ import { Campaign, UserProfile, RecurrencePattern } from '@/types';
 import { canSendMoreEmails, getUserLimits } from '@/lib/plan-limits';
 import { isSupabaseConfigured } from '@/lib/supabase/client';
 
-// Maximum overdue grace window for one-time scheduled campaigns (30 minutes).
-// Campaigns older than this are auto-paused instead of firing expired offers.
-const MAX_OVERDUE_GRACE_MS = 30 * 60 * 1000;
+// Maximum overdue grace window for one-time scheduled campaigns (12 hours),
+// plus explicit cutoff before Nov 25, 2026 so closed Nov 2-17 campaigns never fire.
+const MAX_OVERDUE_GRACE_MS = 12 * 60 * 60 * 1000;
+const EXPIRED_OFFERS_CUTOFF = new Date('2026-11-25T00:00:00.000Z').getTime();
 
 // Campaigns stuck in 'sending' with no active runner for 2+ hours are auto-paused.
 const STALE_SENDING_MS = 2 * 60 * 60 * 1000;
@@ -336,11 +337,11 @@ async function runSweepInternal(
     const now = Date.now();
     const allCampaigns = localStore.getCampaigns();
 
-    // 1. Clean up stale 'sending' campaigns that have no active runner and have been idle > 2h
+    // 1. Auto-pause stale 'sending' campaigns (>2h inactive or before cutoff) and resume recent interrupted ones
     for (const c of allCampaigns) {
       if (c.status === 'sending' && !activeRunners[c.id]) {
         const refEpoch = new Date(c.last_executed_at || c.updated_at || c.created_at || 0).getTime();
-        if (!isNaN(refEpoch) && now - refEpoch > STALE_SENDING_MS) {
+        if (!isNaN(refEpoch) && (refEpoch < EXPIRED_OFFERS_CUTOFF || now - refEpoch > STALE_SENDING_MS)) {
           console.log(`[Scheduler] Auto-pausing stale sending campaign "${c.name}" (${c.id})`);
           const paused = localStore.updateCampaign(c.id, {
             status: 'paused',
@@ -356,6 +357,10 @@ async function runSweepInternal(
           });
           await persistCampaignToDb(paused || { ...c, status: 'paused' });
           result.staleSendingPausedIds.push(c.id);
+        } else {
+          // Resume recent interrupted sending campaign (e.g., after serverless 60s limit)
+          ensureCampaignRunnerActive(c.id, onLoopPromise);
+          result.triggeredIds.push(c.id);
         }
       }
     }
@@ -375,8 +380,8 @@ async function runSweepInternal(
       const overdueMs = now - scheduledTime;
       const isRecurring = campaign.schedule_type === 'recurring' && Boolean(campaign.recurrence_pattern);
 
-      // Overdue protection: never fire campaigns whose scheduled window passed > 30 minutes ago
-      if (overdueMs > MAX_OVERDUE_GRACE_MS) {
+      // Overdue protection: never fire campaigns older than cutoff or > 12h overdue
+      if (scheduledTime < EXPIRED_OFFERS_CUTOFF || overdueMs > MAX_OVERDUE_GRACE_MS) {
         const overdueMins = Math.round(overdueMs / 60000);
         if (isRecurring) {
           let nextRun = computeNextRunTime(
@@ -746,7 +751,7 @@ async function executeQueueLoop(campaignId: string) {
       }
 
       unsyncedUpdates++;
-      if (unsyncedUpdates >= 5 || Date.now() - lastDbPersistTime >= 3000) {
+      if (unsyncedUpdates >= 2 || Date.now() - lastDbPersistTime >= 2000) {
         await persistCampaignToDb(localStore.getCampaign(campaignId));
         unsyncedUpdates = 0;
         lastDbPersistTime = Date.now();

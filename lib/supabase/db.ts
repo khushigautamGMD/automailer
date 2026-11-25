@@ -420,6 +420,22 @@ export async function getContactsByListId(listId: string): Promise<Contact[]> {
   } catch (err) {
     console.error('DB getContactsByListId error:', err);
   }
+
+  // Fallback: scan profiles.saved_contacts for this listId
+  try {
+    const { data, error } = await supabase.from('profiles').select('saved_contacts');
+    if (!error && Array.isArray(data)) {
+      for (const row of data) {
+        if (Array.isArray(row.saved_contacts)) {
+          const matches = row.saved_contacts.filter((c: any) => c && c.list_id === listId);
+          if (matches.length > 0) return matches;
+        }
+      }
+    }
+  } catch (err) {
+    console.error('DB getContactsByListId profiles fallback error:', err);
+  }
+
   return [];
 }
 
